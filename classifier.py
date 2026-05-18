@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
+MARGIN_THRESHOLD = 0.05
 
 
 def load_messages(path):
@@ -57,7 +58,7 @@ def call_ollama(prompt):
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 4000},
+        "options": {"temperature": 0.7, "num_predict": 8000},
     })
     resp.raise_for_status()
     return resp.json()["response"]
@@ -101,11 +102,12 @@ def parse_json_response(raw_text):
 def generate_synthetic_examples(category_description):
     prompt = f"""Generate synthetic emails for this category: "{category_description}"
 
-JSON array, 10 objects. Keys: label, from, subject, body, reason. Keep body under 10 words.
-- 4 label "yes" (clearly match the category)
-- 4 label "no" (clearly dont match)
+JSON array, 12 objects. Keys: label, from, subject, body, reason. Keep body under 10 words.
+- 5 label "yes" (clearly match — each from a DIFFERENT sender with DIFFERENT subject. no duplicates)
+- 5 label "no" (clearly dont match — make VERY DIVERSE: one shopping, one social, one work/calendar, one newsletter, one notification. all different types)
 - 2 label "edge" (tricky near-misses that look similar but shouldnt match)
 
+IMPORTANT: every single example must have a unique sender and subject. no repeats.
 Output ONLY the JSON array:"""
 
     print("  generating synthetic examples...")
@@ -132,6 +134,12 @@ Output ONLY the JSON array:"""
             edge_texts.append(text)
 
     print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples")
+
+    # dump for debugging
+    safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
+    with open(f"synthetic_{safe_name}.json", "w") as f:
+        json.dump(examples, f, indent=2)
+
     return yes_texts, no_texts, edge_texts
 
 
@@ -168,11 +176,16 @@ def classify(messages, category_description):
             np.linalg.norm(email_emb) * np.linalg.norm(no_centroid)
         )
 
-        is_match = yes_sim > no_sim
+        margin = abs(yes_sim - no_sim)
+
+        if margin < MARGIN_THRESHOLD:
+            is_match = False
+        else:
+            is_match = yes_sim > no_sim
 
         status = "YES" if is_match else " no"
         print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
-        print(f"        yes_sim={yes_sim:.3f} no_sim={no_sim:.3f}")
+        print(f"        yes_sim={yes_sim:.3f} no_sim={no_sim:.3f} margin={margin:.3f}")
 
         result = {
             "message_id": msg["id"],

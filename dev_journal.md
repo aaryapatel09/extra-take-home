@@ -35,3 +35,19 @@ first bug was json parsing. asked for 15 examples output got truncated mid-objec
 
 the no examples are too narrow so evrything looks more like yes
 
+---
+
+## diverse negatives
+
+told LLM to make negatives span diff types — shopping social work/calendar newsletter
+
+newsletters went from ~6/12 to 12/12 just from that one prompt change. family 5/12 to ~8/12
+
+also added MARGIN_THRESHOLD = 0.05. below that default to no. catches borderline false positives
+
+results: 11/12, 12/12, 11/12 across categories
+
+noticed results change between runs tho. ollama generates diff examples each time. same code same data diff results
+
+AA personal trip still wrong — embeddings cant tell work trip from personal trip. margin is 0.2+ so threshold cant help
+
