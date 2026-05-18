@@ -18,3 +18,20 @@ results sucked:
 - "ai" substring matches evrywhere
 - missed mom/dad for "family"
 
+---
+
+## synthetic contrastive idea
+
+what if you use the LLM once to genearte fake emails that match and dont match. then embed those + real emails and classify based on which pile each one is closer to
+
+manufacturing labeled data from nothing. ollama w llama3.2 locally, sentence-transformers for embedings
+
+first bug was json parsing. asked for 15 examples output got truncated mid-object. cut to 10 added regex fallback
+
+### v1 results
+- travel 10/12
+- newsletters ~6/12 tons of false positives
+- family 5/12 bad evrything defaulted yes
+
+the no examples are too narrow so evrything looks more like yes
+

@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-gmail custom category builder - v0 (keyword matching, intentionally naive)
-this is the dumb version. just splits the category description into words
-and checks if any of them appear in the email. gonna be bad but it gets
-the pipeline working end to end.
+gmail custom category builder
+
+approach: synthetic contrastive examples
+- ask local LLM (ollama) to generate synthetic "yes" and "no" example emails
+- embed everything with sentence-transformers (free, local)
+- classify each real email by cosine similarity to yes/no centroids
 """
 
 import json
 import base64
 import sys
 import re
+import requests
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2"
 
 
 def load_messages(path):
@@ -25,8 +34,6 @@ def load_messages(path):
 def decode_body(body_b64):
     try:
         raw = base64.b64decode(body_b64).decode("utf-8")
-        # strip html tags if present - super naive regex approach
-        # TODO: this is gonna break on nested tags, malformed html, etc
         clean = re.sub(r"<[^>]+>", " ", raw)
         clean = re.sub(r"\s+", " ", clean).strip()
         return clean
@@ -34,72 +41,152 @@ def decode_body(body_b64):
         return f"[decode error: {e}]"
 
 
-def extract_keywords(category_description):
-    """pull 'meaningful' words from the category description.
-    just lowercases and removes stopwords. this is the dumb part."""
-    stopwords = {
-        "a", "an", "the", "is", "are", "was", "were", "be", "been",
-        "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "can", "shall",
-        "about", "above", "after", "again", "against", "all", "am",
-        "and", "any", "are", "as", "at", "because", "before", "between",
-        "both", "but", "by", "down", "during", "each", "few", "for",
-        "from", "further", "get", "got", "he", "her", "here", "hers",
-        "herself", "him", "himself", "his", "how", "i", "if", "in",
-        "into", "it", "its", "itself", "just", "me", "more", "most",
-        "my", "myself", "no", "nor", "not", "now", "of", "off", "on",
-        "once", "only", "or", "other", "our", "ours", "ourselves", "out",
-        "over", "own", "re", "same", "she", "so", "some", "such", "than",
-        "that", "their", "theirs", "them", "themselves", "then", "there",
-        "these", "they", "this", "those", "through", "to", "too", "under",
-        "until", "up", "very", "we", "what", "when", "where", "which",
-        "while", "who", "whom", "why", "with", "you", "your", "yours",
-        "related",
-    }
-    words = re.findall(r"\w+", category_description.lower())
-    keywords = [w for w in words if w not in stopwords]
-    return keywords
+def email_to_text(msg):
+    body = decode_body(msg.get("body", ""))
+    parts = [
+        f"From: {msg.get('from', '')}",
+        f"Subject: {msg.get('subject', '')}",
+        f"Snippet: {msg.get('snippet', '')}",
+        f"Body: {body}",
+    ]
+    return "\n".join(parts)
 
 
-def classify_message(msg, keywords):
-    """check if any keyword appears in subject, snippet, from, or decoded body.
-    returns (is_match, explanation)"""
-    body_text = decode_body(msg.get("body", ""))
-    searchable = " ".join([
-        msg.get("subject", ""),
-        msg.get("snippet", ""),
-        msg.get("from", ""),
-        body_text,
-    ]).lower()
+def call_ollama(prompt):
+    resp = requests.post(OLLAMA_URL, json={
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0.7, "num_predict": 4000},
+    })
+    resp.raise_for_status()
+    return resp.json()["response"]
 
-    matched = [kw for kw in keywords if kw in searchable]
 
-    if matched:
-        return True, f"matched keywords: {', '.join(matched)}"
-    else:
-        return False, "no keyword matches found"
+def parse_json_response(raw_text):
+    raw_text = raw_text.strip()
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```\w*\n?", "", raw_text)
+        raw_text = re.sub(r"\n?```$", "", raw_text)
+        raw_text = raw_text.strip()
+
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r'[\[{].*[\]}]', raw_text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    obj_matches = re.findall(r'\{[^{}]+\}', raw_text)
+    recovered = []
+    for obj_str in obj_matches:
+        try:
+            recovered.append(json.loads(obj_str))
+        except json.JSONDecodeError:
+            continue
+    if recovered:
+        print(f"  recovered {len(recovered)} objects from partial json")
+        return recovered
+
+    print(f"  FAILED to parse json. raw:")
+    print(raw_text[:300])
+    return None
+
+
+def generate_synthetic_examples(category_description):
+    prompt = f"""Generate synthetic emails for this category: "{category_description}"
+
+JSON array, 10 objects. Keys: label, from, subject, body, reason. Keep body under 10 words.
+- 4 label "yes" (clearly match the category)
+- 4 label "no" (clearly dont match)
+- 2 label "edge" (tricky near-misses that look similar but shouldnt match)
+
+Output ONLY the JSON array:"""
+
+    print("  generating synthetic examples...")
+    raw = call_ollama(prompt)
+    examples = parse_json_response(raw)
+
+    if not examples or not isinstance(examples, list):
+        return [], [], []
+
+    yes_texts = []
+    no_texts = []
+    edge_texts = []
+
+    for ex in examples:
+        if not isinstance(ex, dict):
+            continue
+        text = f"From: {ex.get('from', '')}\nSubject: {ex.get('subject', '')}\nSnippet: {ex.get('snippet', '')}\nBody: {ex.get('body', '')}"
+        label = str(ex.get("label", "")).lower().strip()
+        if label == "yes":
+            yes_texts.append(text)
+        elif label == "no":
+            no_texts.append(text)
+        elif label == "edge":
+            edge_texts.append(text)
+
+    print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples")
+    return yes_texts, no_texts, edge_texts
+
+
+def classify(messages, category_description):
+    print(f"\n=== classifier ===")
+    print(f"category: \"{category_description}\"\n")
+
+    yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description)
+    if not yes_texts or not no_texts:
+        print("ERROR: couldnt generate examples")
+        return []
+
+    print("  loading embedding model...")
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    print("  embedding synthetic examples...")
+    yes_emb = model.encode(yes_texts)
+    no_emb = model.encode(no_texts)
+
+    yes_centroid = np.mean(yes_emb, axis=0)
+    no_centroid = np.mean(no_emb, axis=0)
+
+    print(f"  classifying {len(messages)} emails...\n")
+    results = []
+
+    for msg in messages:
+        email_text = email_to_text(msg)
+        email_emb = model.encode([email_text])[0]
+
+        yes_sim = np.dot(email_emb, yes_centroid) / (
+            np.linalg.norm(email_emb) * np.linalg.norm(yes_centroid)
+        )
+        no_sim = np.dot(email_emb, no_centroid) / (
+            np.linalg.norm(email_emb) * np.linalg.norm(no_centroid)
+        )
+
+        is_match = yes_sim > no_sim
+
+        status = "YES" if is_match else " no"
+        print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+        print(f"        yes_sim={yes_sim:.3f} no_sim={no_sim:.3f}")
+
+        result = {
+            "message_id": msg["id"],
+            "is_in_category": bool(is_match),
+            "explanation": f"{'similar to positive' if is_match else 'similar to negative'} examples (yes_sim={yes_sim:.3f}, no_sim={no_sim:.3f})",
+        }
+        results.append(result)
+
+    return results
 
 
 def run(messages_path, category_description):
     messages = load_messages(messages_path)
-    keywords = extract_keywords(category_description)
-
-    print(f"\n--- category: \"{category_description}\"")
-    print(f"--- extracted keywords: {keywords}")
-    print(f"--- processing {len(messages)} messages\n")
-
-    results = []
-    for msg in messages:
-        is_match, explanation = classify_message(msg, keywords)
-        result = {
-            "message_id": msg["id"],
-            "is_in_category": is_match,
-            "explanation": explanation,
-        }
-        results.append(result)
-
-        status = "YES" if is_match else " no"
-        print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+    results = classify(messages, category_description)
 
     print(f"\n--- results ---")
     print(json.dumps(results, indent=2))
