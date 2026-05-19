@@ -77,3 +77,12 @@ bug: LLM said "does not match" for an email classified yes. split into two promp
 
 tradeoff: 1 extra LLM call per email
 
+---
+
+## active learning + caching + cli
+
+tried adding corrected emails to centroids for active learning. broke evrything — correcting AA trip to no dragged no centroid toward airline content, delta and united both became no. switched to direct overrides after classification
+
+caching: just load synthetic examples from disk if they exist instead of regenerating. same cache = same results. type fresh to regenerate
+
+cli: interactive loop enter category see results flip wrong ones re-run

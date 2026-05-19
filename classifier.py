@@ -14,6 +14,7 @@ with noisy synthetic data (see dev_journal.md)
 import json
 import base64
 import sys
+import os
 import re
 import requests
 import numpy as np
@@ -102,8 +103,39 @@ def parse_json_response(raw_text):
     return None
 
 
-def generate_synthetic_examples(category_description):
-    """generate synthetic yes/no emails for this category"""
+def _parse_examples(examples):
+    yes_texts = []
+    no_texts = []
+    edge_texts = []
+    for ex in examples:
+        if not isinstance(ex, dict):
+            continue
+        text = f"From: {ex.get('from', '')}\nSubject: {ex.get('subject', '')}\nSnippet: {ex.get('snippet', '')}\nBody: {ex.get('body', '')}"
+        label = str(ex.get("label", "")).lower().strip()
+        if label == "yes":
+            yes_texts.append(text)
+        elif label == "no":
+            no_texts.append(text)
+        elif label == "edge":
+            edge_texts.append(text)
+    return yes_texts, no_texts, edge_texts
+
+
+def generate_synthetic_examples(category_description, fresh=False):
+    """generate synthetic yes/no emails for this category. caches to disk."""
+    safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
+    cache_path = f"synthetic_{safe_name}.json"
+
+    if not fresh and os.path.exists(cache_path):
+        print(f"  loading cached examples from {cache_path}")
+        with open(cache_path, "r") as f:
+            examples = json.load(f)
+        yes_texts, no_texts, edge_texts = _parse_examples(examples)
+        if yes_texts and no_texts:
+            print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples (cached)")
+            return yes_texts, no_texts, edge_texts
+        print("  cache was bad, regenerating...")
+
     prompt = f"""Generate synthetic emails for this category: "{category_description}"
 
 JSON array, 12 objects. Keys: label, from, subject, body, reason. Keep body under 10 words.
@@ -121,26 +153,10 @@ Output ONLY the JSON array:"""
     if not examples or not isinstance(examples, list):
         return [], [], []
 
-    yes_texts = []
-    no_texts = []
-    edge_texts = []
-
-    for ex in examples:
-        if not isinstance(ex, dict):
-            continue
-        text = f"From: {ex.get('from', '')}\nSubject: {ex.get('subject', '')}\nSnippet: {ex.get('snippet', '')}\nBody: {ex.get('body', '')}"
-        label = str(ex.get("label", "")).lower().strip()
-        if label == "yes":
-            yes_texts.append(text)
-        elif label == "no":
-            no_texts.append(text)
-        elif label == "edge":
-            edge_texts.append(text)
-
+    yes_texts, no_texts, edge_texts = _parse_examples(examples)
     print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples")
 
-    safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
-    with open(f"synthetic_{safe_name}.json", "w") as f:
+    with open(cache_path, "w") as f:
         json.dump(examples, f, indent=2)
 
     return yes_texts, no_texts, edge_texts
@@ -171,11 +187,30 @@ This email DOES NOT match the category. Write one short sentence (under 15 words
         return f"{'matches' if is_match else 'does not match'} category"
 
 
-def classify(messages, category_description):
+def get_feedback_path(category_description):
+    safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
+    return f"feedback_{safe_name}.json"
+
+
+def load_feedback(category_description):
+    path = get_feedback_path(category_description)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_feedback(category_description, feedback):
+    path = get_feedback_path(category_description)
+    with open(path, "w") as f:
+        json.dump(feedback, f, indent=2)
+
+
+def classify(messages, category_description, feedback=None, fresh=False):
     print(f"\n=== classifier ===")
     print(f"category: \"{category_description}\"\n")
 
-    yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description)
+    yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description, fresh=fresh)
     if not yes_texts or not no_texts:
         print("ERROR: couldnt generate examples")
         return []
@@ -220,12 +255,24 @@ def classify(messages, category_description):
         results.append(result)
         print(f"        -> {explanation}")
 
+    if feedback:
+        applied = 0
+        for result in results:
+            if result["message_id"] in feedback:
+                corrected = feedback[result["message_id"]]["corrected_label"]
+                if result["is_in_category"] != corrected:
+                    result["is_in_category"] = corrected
+                    result["explanation"] += " (corrected)"
+                    applied += 1
+        if applied:
+            print(f"\n  applied {applied} corrections")
+
     return results
 
 
-def run(messages_path, category_description):
+def run(messages_path, category_description, feedback=None):
     messages = load_messages(messages_path)
-    results = classify(messages, category_description)
+    results = classify(messages, category_description, feedback)
 
     print(f"\n--- results ---")
     print(json.dumps(results, indent=2))
