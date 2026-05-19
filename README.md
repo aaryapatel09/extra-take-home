@@ -1,28 +1,145 @@
-gmail custom category builder
+# gmail category builder
 
-takes a natural language category description (like "work travel receipts from airlines") and classifies a pile of gmail messages as matching or not.
+classifies gmail messages into custom categories you describe in plain english. like "work travel receipts from airlines" or "family stuff" or "newsletters about AI".
 
-setup:
+no paid APIs, everything runs locally — ollama for the LLM and sentence-transformers for embeddings.
+
+## setup
+
+you need:
 - python 3.10+
-- ollama running locally (brew install ollama, ollama pull llama3.2)
-- pip install -r requirements.txt (in a venv ideally)
+- ollama installed and running (`brew install ollama && ollama serve`)
+- llama3.2 pulled (`ollama pull llama3.2`)
 
-how to run:
-  python classifier.py messages.jsonl "work-related travel receipts from airlines"
+```
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-or just:
-  python classifier.py
-  (it will ask you for the category)
+requirements are just sentence-transformers, requests, and numpy.
 
-how it works:
-instead of sending every email to an LLM (expensive, slow, doesnt scale), we use the LLM once to generate synthetic example emails — some that match the category, some that dont, and some tricky edge cases. then we embed everything with sentence-transformers locally and classify each real email based on whether its more similar to the "yes" pile or the "no" pile.
+## how to run
 
-basically we manufacture our own training data from the LLMs world knowledge and use embeddings to do the actual classification. 1 LLM call total regardless of how many emails you have.
+### cli (interactive)
 
-output is a json array:
-  [{"message_id": "...", "is_in_category": true/false, "explanation": "..."}]
+```
+python3 cli.py messages.jsonl
+```
 
-still working on:
-- accuracy on vague categories is rough
-- explanations are just similarity scores rn
-- need a margin threshold for borderline cases
+then type a category. comma-separate for multiple categories at once:
+
+```
+category> work-related travel receipts from airlines
+category> family, newsletters, travel receipts
+```
+
+type `fresh` to regenerate synthetic examples. flip wrong results by typing the row number.
+
+### direct
+
+```
+python3 classifier.py messages.jsonl "work-related travel receipts from airlines"
+```
+
+or multiple:
+
+```
+python3 classifier.py messages.jsonl "travel receipts" "family" "newsletters"
+```
+
+output is json:
+
+```json
+[
+  {"message_id": "174a9", "is_in_category": true, "explanation": "Delta eTicket receipt is a travel booking confirmation from an airline"},
+  {"message_id": "174b2", "is_in_category": false, "explanation": "AI Newsletter is a tech digest, not a travel receipt"}
+]
+```
+
+## approach
+
+the main problem: how do you classify emails into an arbitrary category the user just typed in?
+
+obvious options and why i didnt use them:
+- **keyword matching**: tried it first. terrible. "receipt" misses "receipts", "ai" substring matches everywhere, cant handle semantic stuff like "family"
+- **per-email LLM calls**: send every email to the LLM and ask "does this match?" — works but 10k emails = 10k API calls. doesnt scale
+- **embeddings with a threshold**: embed the category + emails, threshold on cosine similarity. but what threshold? 0.7? 0.8? no way to know without labeled data, which we dont have
+
+### synthetic contrastive examples
+
+what i ended up doing: use the LLM *once* to generate fake example emails — some that clearly match the category, some that clearly dont, and a couple tricky edge cases. then embed all of those plus the real emails with sentence-transformers (all-MiniLM-L6-v2, runs locally, 384-dim vectors). classify each real email based on whether its embedding is closer to the average of the "yes" examples or the average of the "no" examples.
+
+basically manufacturing labeled training data from the LLMs knowledge, then using embeddings for the actual classification. the LLM understands what "work travel receipts from airlines" means and generates good examples of what matches and what doesnt. the embeddings handle the comparison at scale.
+
+it takes 1 LLM call to generate examples regardless of how many emails you have. the embedding model is loaded once and encodes all emails in a single batch.
+
+### why centroids and not KNN
+
+tried KNN (k=5, each synthetic example votes individually) — actually performed worse. i think centroids average out noise from bad synthetic examples. KNN gets thrown off by individual weird ones that ollama sometimes generates. centroid is more stable with noisy data.
+
+also tried decomposing categories into sub-questions with AND/OR/NOT logic ("work NOT meetings" = two classifiers chained). three noisy classifiers ANDed together = nothing passes. reverted.
+
+### thresholds and edge cases
+
+- **margin threshold (0.05)**: if the difference between yes-similarity and no-similarity is less than 0.05, we default to "no". catches borderline false positives where the model isnt really sure
+- **diverse negatives**: the "no" examples are intentionally spread across different email types (shopping, social, work/calendar, newsletter, notification). early versions had narrow negatives and everything defaulted to yes
+- **edge examples**: the LLM also generates 2 "tricky near-miss" examples — things that look similar to the category but shouldnt match. these get added to the no pile to tighten the decision boundary
+
+### explanations
+
+each result comes with a plain english explanation generated by ollama. separate prompts for matches vs non-matches (early version used one prompt and the LLM would say "does not match" for things classified as yes).
+
+### corrections / active learning
+
+the cli lets you flip wrong results. corrections are saved to disk and applied as overrides on subsequent runs. tried injecting corrections back into the centroids but it broke things — correcting one airline email to "no" dragged the no-centroid toward airline content and everything airline-related became "no". direct overrides are simpler and dont have side effects.
+
+### caching
+
+synthetic examples are cached to disk after the first run (`synthetic_*.json`). same cache = same results every time. type `fresh` in the cli to regenerate.
+
+## example run
+
+```
+$ python3 cli.py messages.jsonl
+
+  gmail category builder
+  12 emails loaded from messages.jsonl
+
+  category> work-related travel receipts from airlines
+
+   1.  YES  Your Delta eTicket Receipt                   Delta
+            Delta eTicket is a work travel airline receipt
+   2.   no  Weekly AI Research Digest                     AI Newsletter
+            AI Newsletter is a tech digest, not a travel receipt
+   3.   no  Re: Thanksgiving plans                        Mom
+            Mom's Thanksgiving email is personal family communication
+   4.  YES  United Airlines - Booking Confirmation         United Airlines
+            United booking confirmation is a work travel airline receipt
+   5.   no  Your Amazon Order Has Shipped                  Amazon
+            Amazon shipping notification is online shopping, not travel
+   6.   no  Invitation: Q3 Planning Meeting                Calendar
+            Q3 planning invite is a work meeting, not a travel receipt
+   7.   no  Papers We Love: August Edition                 PWL
+            Papers We Love is a tech newsletter, not travel related
+   8.   no  Re: Weekend BBQ                                Dad
+            Dad's BBQ email is personal family plans
+   9.   no  American Airlines - Trip Summary               American Air...
+            AA trip receipt charged to personal Visa, not work travel
+  10.   no  GitHub: Pull request merged                    GitHub
+            GitHub PR notification is a dev tool alert
+  11.   no  Fwd: Family Reunion Photos                     Sister
+            Family reunion photos are personal, not travel receipts
+  12.   no  Your Spotify Wrapped is here                   Spotify
+            Spotify Wrapped is a music service notification
+```
+
+note: the AA personal trip (#9) gets correctly rejected because the body mentions "personal Visa" and "personal vacation trip". the embeddings pick up on this distinction even though the sender is an airline. thats the kind of thing keyword matching would never catch.
+
+## files
+
+- `classifier.py` — main classification logic, synthetic example generation, embedding, feedback
+- `cli.py` — interactive terminal interface with corrections
+- `messages.jsonl` — sample email dataset (12 messages)
+- `requirements.txt` — python dependencies
+- `dev_journal.md` — development notes and iteration history

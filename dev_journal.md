@@ -86,3 +86,19 @@ tried adding corrected emails to centroids for active learning. broke evrything 
 caching: just load synthetic examples from disk if they exist instead of regenerating. same cache = same results. type fresh to regenerate
 
 cli: interactive loop enter category see results flip wrong ones re-run
+
+---
+
+## batch embedding + edge examples
+
+was encoding emails one at a time in a loop. sentence-transformers can take a list and batch it on gpu/cpu way faster. switched to encode all emails in one call
+
+also realized edge examples (the tricky near-misses) were being generated but never used. added them to the no pile — they tighten the decision boundary since theyre specifically designed to look like matches but arent
+
+---
+
+## multiple categories
+
+added classify_multi — pass several categories at once like "work receipts, family, newsletters". loads embedding model once, batch embeds emails once, then runs each category against the same embeddings. only the synthetic example generation + centroid computation happens per-category
+
+cli supports comma-separated input. corrections still work per category

@@ -220,18 +220,20 @@ def classify(messages, category_description, feedback=None, fresh=False):
 
     print("  embedding synthetic examples...")
     yes_emb = model.encode(yes_texts)
-    no_emb = model.encode(no_texts)
+    no_all = no_texts + edge_texts
+    no_emb = model.encode(no_all)
 
     yes_centroid = np.mean(yes_emb, axis=0)
     no_centroid = np.mean(no_emb, axis=0)
 
-    print(f"  classifying {len(messages)} emails...\n")
+    email_texts = [email_to_text(msg) for msg in messages]
+    print(f"  batch embedding {len(messages)} emails...")
+    all_emb = model.encode(email_texts)
+
+    print(f"  classifying...\n")
     results = []
 
-    for msg in messages:
-        email_text = email_to_text(msg)
-        email_emb = model.encode([email_text])[0]
-
+    for msg, email_emb in zip(messages, all_emb):
         yes_sim = cosine_sim(email_emb, yes_centroid)
         no_sim = cosine_sim(email_emb, no_centroid)
 
@@ -270,6 +272,85 @@ def classify(messages, category_description, feedback=None, fresh=False):
     return results
 
 
+def classify_multi(messages, categories, feedbacks=None, fresh=False):
+    """classify emails against multiple categories, reusing model + embeddings"""
+    if feedbacks is None:
+        feedbacks = {}
+
+    print(f"\n=== multi-category classifier ===")
+    print(f"categories: {categories}\n")
+
+    category_examples = {}
+    for cat in categories:
+        yes_texts, no_texts, edge_texts = generate_synthetic_examples(cat, fresh=fresh)
+        if not yes_texts or not no_texts:
+            print(f"  WARNING: couldnt generate examples for \"{cat}\", skipping")
+            continue
+        category_examples[cat] = (yes_texts, no_texts, edge_texts)
+
+    if not category_examples:
+        print("ERROR: no valid categories")
+        return {}
+
+    print("  loading embedding model...")
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+
+    email_texts = [email_to_text(msg) for msg in messages]
+    print(f"  batch embedding {len(messages)} emails...")
+    all_emb = model.encode(email_texts)
+
+    all_results = {}
+    for cat, (yes_texts, no_texts, edge_texts) in category_examples.items():
+        print(f"\n  --- {cat} ---")
+
+        yes_emb = model.encode(yes_texts)
+        no_all = no_texts + edge_texts
+        no_emb = model.encode(no_all)
+
+        yes_centroid = np.mean(yes_emb, axis=0)
+        no_centroid = np.mean(no_emb, axis=0)
+
+        results = []
+        for msg, email_emb in zip(messages, all_emb):
+            yes_sim = cosine_sim(email_emb, yes_centroid)
+            no_sim = cosine_sim(email_emb, no_centroid)
+            margin = abs(yes_sim - no_sim)
+
+            if margin < MARGIN_THRESHOLD:
+                is_match = False
+            else:
+                is_match = yes_sim > no_sim
+
+            status = "YES" if is_match else " no"
+            print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+
+            explanation = generate_explanation(msg, cat, is_match)
+            result = {
+                "message_id": msg["id"],
+                "is_in_category": bool(is_match),
+                "explanation": explanation,
+            }
+            results.append(result)
+            print(f"        -> {explanation}")
+
+        feedback = feedbacks.get(cat, {})
+        if feedback:
+            applied = 0
+            for result in results:
+                if result["message_id"] in feedback:
+                    corrected = feedback[result["message_id"]]["corrected_label"]
+                    if result["is_in_category"] != corrected:
+                        result["is_in_category"] = corrected
+                        result["explanation"] += " (corrected)"
+                        applied += 1
+            if applied:
+                print(f"  applied {applied} corrections for \"{cat}\"")
+
+        all_results[cat] = results
+
+    return all_results
+
+
 def run(messages_path, category_description, feedback=None):
     messages = load_messages(messages_path)
     results = classify(messages, category_description, feedback)
@@ -281,5 +362,13 @@ def run(messages_path, category_description, feedback=None):
 
 if __name__ == "__main__":
     messages_file = sys.argv[1] if len(sys.argv) > 1 else "messages.jsonl"
-    category = input("enter category description: ") if len(sys.argv) < 3 else sys.argv[2]
-    run(messages_file, category)
+    if len(sys.argv) > 3:
+        messages = load_messages(messages_file)
+        all_results = classify_multi(messages, sys.argv[2:])
+        print(f"\n--- results ---")
+        print(json.dumps(all_results, indent=2))
+    elif len(sys.argv) == 3:
+        run(messages_file, sys.argv[2])
+    else:
+        category = input("enter category description: ")
+        run(messages_file, category)
