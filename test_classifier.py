@@ -16,6 +16,8 @@ from classifier import (
     load_messages,
     generate_synthetic_examples,
     generate_explanations_batch,
+    generate_heuristic_rules,
+    score_rules,
     get_feedback_path,
     load_feedback,
     save_feedback,
@@ -499,6 +501,7 @@ def test_classify_returns_correct_schema(mock_ollama, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),  # synthetic examples
+        FAKE_RULES,                  # heuristic rules
         FAKE_EXPLANATIONS,           # batch explanations
     ]
     results = classify(SAMPLE_MSGS, "travel receipts", fresh=True)
@@ -516,6 +519,7 @@ def test_classify_applies_feedback(mock_ollama, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
         FAKE_EXPLANATIONS,
     ]
     feedback = {"174a9": {"corrected_label": False}}
@@ -530,6 +534,7 @@ def test_classify_empty_messages(mock_ollama, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
         "[]",
     ]
     results = classify([], "travel receipts", fresh=True)
@@ -551,7 +556,9 @@ def test_classify_multi_returns_all_categories(mock_ollama, tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),  # synthetic for cat 1
+        FAKE_RULES,                  # rules for cat 1
         json.dumps(FAKE_SYNTHETIC),  # synthetic for cat 2
+        FAKE_RULES,                  # rules for cat 2
         FAKE_EXPLANATIONS,           # explanations for cat 1
         FAKE_EXPLANATIONS,           # explanations for cat 2
     ]
@@ -567,7 +574,9 @@ def test_classify_multi_applies_per_category_feedback(mock_ollama, tmp_path, mon
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
         json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
         FAKE_EXPLANATIONS,
         FAKE_EXPLANATIONS,
     ]
@@ -587,6 +596,7 @@ def test_classify_multi_skips_bad_categories(mock_ollama, tmp_path, monkeypatch)
     mock_ollama.side_effect = [
         "garbage",                   # bad synthetic for cat 1
         json.dumps(FAKE_SYNTHETIC),  # good synthetic for cat 2
+        FAKE_RULES,                  # rules for cat 2
         FAKE_EXPLANATIONS,           # explanations for cat 2
     ]
     results = classify_multi(SAMPLE_MSGS, ["bad", "good"], fresh=True)
@@ -601,6 +611,7 @@ def test_output_matches_spec_schema(mock_ollama, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     mock_ollama.side_effect = [
         json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
         FAKE_EXPLANATIONS,
     ]
     results = classify(SAMPLE_MSGS, "travel receipts", fresh=True)
@@ -644,3 +655,137 @@ def test_clear_match_above_threshold():
     is_match = bool(yes_sim > no_sim) if margin >= MARGIN_THRESHOLD else False
     assert margin > MARGIN_THRESHOLD
     assert is_match is True
+
+
+# ── score_rules ────────────────────────────────────────────
+
+SAMPLE_RULES = {
+    "keywords": ["receipt", "booking", "eticket", "confirmation"],
+    "sender_hints": ["delta", "united", "aa.com"],
+    "exclude_keywords": ["newsletter", "social"],
+}
+
+
+def test_score_rules_keyword_hits():
+    msg = {"subject": "Your eTicket Receipt", "snippet": "booking confirmed", "from": "someone", "body": ""}
+    score = score_rules(msg, SAMPLE_RULES)
+    assert score >= 2
+
+
+def test_score_rules_sender_match():
+    msg = {"subject": "Something", "snippet": "", "from": "Delta <noreply@delta.com>", "body": ""}
+    score = score_rules(msg, SAMPLE_RULES)
+    assert score >= 1
+
+
+def test_score_rules_exclusion():
+    msg = {"subject": "Newsletter about travel", "snippet": "", "from": "news@test.com", "body": ""}
+    score = score_rules(msg, SAMPLE_RULES)
+    assert score < 1  # newsletter exclusion cancels out any keyword hit
+
+
+def test_score_rules_no_matches():
+    msg = {"subject": "Weekend BBQ plans", "snippet": "firing up the grill", "from": "Dad <dad@gmail.com>", "body": ""}
+    score = score_rules(msg, SAMPLE_RULES)
+    assert score == 0
+
+
+def test_score_rules_empty_rules():
+    msg = {"subject": "anything", "snippet": "", "from": "anyone", "body": ""}
+    score = score_rules(msg, {"keywords": [], "sender_hints": [], "exclude_keywords": []})
+    assert score == 0
+
+
+def test_score_rules_body_content():
+    msg = {
+        "subject": "Your flight",
+        "snippet": "",
+        "from": "airline@test.com",
+        "body": base64.b64encode(b"Here is your receipt and booking confirmation").decode(),
+    }
+    score = score_rules(msg, SAMPLE_RULES)
+    assert score >= 2
+
+
+def test_score_rules_mixed_signals():
+    msg = {"subject": "Receipt for newsletter subscription", "snippet": "", "from": "news@test.com", "body": ""}
+    score = score_rules(msg, SAMPLE_RULES)
+    # "receipt" +1, "newsletter" -1 = 0 or close
+    assert score <= 1
+
+
+# ── generate_heuristic_rules ───────────────────────────────
+
+FAKE_RULES = json.dumps({
+    "keywords": ["receipt", "booking", "eticket"],
+    "sender_hints": ["delta", "united"],
+    "exclude_keywords": ["newsletter"],
+})
+
+
+@patch("classifier.call_ollama")
+def test_generate_rules_caches(mock_ollama, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.return_value = FAKE_RULES
+    rules = generate_heuristic_rules("travel receipts", fresh=True)
+    assert "receipt" in rules["keywords"]
+    assert mock_ollama.call_count == 1
+
+    rules2 = generate_heuristic_rules("travel receipts", fresh=False)
+    assert rules2["keywords"] == rules["keywords"]
+    assert mock_ollama.call_count == 1  # used cache
+
+
+@patch("classifier.call_ollama")
+def test_generate_rules_deduplicates(mock_ollama, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    overlapping = json.dumps({
+        "keywords": ["travel", "receipt", "blog"],
+        "sender_hints": ["delta"],
+        "exclude_keywords": ["travel", "spam"],
+    })
+    mock_ollama.return_value = overlapping
+    rules = generate_heuristic_rules("test", fresh=True)
+    assert "travel" not in rules["keywords"]
+    assert "receipt" in rules["keywords"]
+    assert "travel" in rules["exclude_keywords"]
+
+
+@patch("classifier.call_ollama")
+def test_generate_rules_bad_response(mock_ollama, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.return_value = "not json"
+    rules = generate_heuristic_rules("bad", fresh=True)
+    assert rules["keywords"] == []
+    assert rules["sender_hints"] == []
+
+
+# ── tiebreaker integration ─────────────────────────────────
+
+def test_tiebreaker_rules_flip_borderline():
+    """when margin is below threshold but rules match, result should be yes"""
+    yes_centroid = np.array([1.0, 0.0])
+    no_centroid = np.array([0.99, 0.01])
+    email_emb = np.array([0.995, 0.005])
+
+    yes_sim = cosine_sim(email_emb, yes_centroid)
+    no_sim = cosine_sim(email_emb, no_centroid)
+    margin = abs(yes_sim - no_sim)
+    assert margin < MARGIN_THRESHOLD
+
+    rules = {"keywords": ["receipt", "booking"], "sender_hints": ["delta"], "exclude_keywords": []}
+    msg = {"subject": "Your Receipt", "snippet": "booking", "from": "Delta <noreply@delta.com>", "body": ""}
+
+    rscore = score_rules(msg, rules)
+    assert rscore > 0
+
+    is_match = True if rscore > 0 else False
+    assert is_match is True
+
+
+def test_tiebreaker_rules_keep_no():
+    """when margin is below threshold and rules dont match, result stays no"""
+    rules = {"keywords": ["receipt"], "sender_hints": ["delta"], "exclude_keywords": []}
+    msg = {"subject": "Weekend BBQ", "snippet": "grill", "from": "Dad <dad@gmail.com>", "body": ""}
+    rscore = score_rules(msg, rules)
+    assert rscore <= 0

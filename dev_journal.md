@@ -102,3 +102,29 @@ also realized edge examples (the tricky near-misses) were being generated but ne
 added classify_multi — pass several categories at once like "work receipts, family, newsletters". loads embedding model once, batch embeds emails once, then runs each category against the same embeddings. only the synthetic example generation + centroid computation happens per-category
 
 cli supports comma-separated input. corrections still work per category
+
+---
+
+## rule + embedding ensemble
+
+embeddings are great for semantic matching but sometimes they miss obvious surface-level stuff. like if the category is "receipts" and the email literally has "receipt" in the subject, the embeddings might still score it borderline if the rest of the email is weird. figured i should combine simple keyword/domain heuristics with the embedding classifier
+
+### v1: weighted average (bad)
+
+first attempt was dumb. generated keyword rules from ollama (same as synthetic examples — one extra call, cached), then combined rule score with embedding similarity as a weighted average. 70% embedding + 30% rules
+
+broke immediately. an email from delta about a flight change had strong embedding match but the rules didnt find "receipt" in the body so the weighted average dragged it below threshold. clear embedding wins were getting overridden by rules that happened to miss. the whole point of embeddings is semantic understanding and i was undermining that with keyword matching
+
+### v2: rules override embeddings (also bad)
+
+tried the opposite — if rules strongly match (3+ keyword hits), override the embedding result. this was even worse. a newsletter about "airline industry travel trends" had "airline", "travel", "receipt" mentioned in passing and the rules forced it to yes. the embeddings correctly said no because the content was newsletter-y not receipt-y, but the rules overruled
+
+### v3: tiebreaker only (good)
+
+realized the right approach: rules should only speak when embeddings cant decide. specifically, when the embedding margin is below 0.05 (the threshold where we default to no), let the rules break the tie instead. if rules score positive, flip to yes. if not, keep the default no
+
+this means rules never override a strong embedding signal. they only help in the gray zone where the embeddings are genuinely unsure. tested and it caught a borderline email that embeddings couldnt quite place but had obvious keyword matches
+
+also had a bug where the LLM generated overlapping keywords — "travel" appeared in both keywords and exclude_keywords for "work travel receipts" because it included "travel blog" as an exclusion pattern. had to deduplicate by removing any keyword that also appears in the exclude list
+
+rules are cached alongside synthetic examples. one extra ollama call per category, cached to disk after first run

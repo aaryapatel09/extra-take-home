@@ -170,6 +170,70 @@ Output ONLY the JSON array:"""
     return yes_texts, no_texts, edge_texts
 
 
+def generate_heuristic_rules(category_description, fresh=False):
+    """ask ollama for simple keyword/sender rules for this category. caches to disk."""
+    safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
+    cache_path = f"rules_{safe_name}.json"
+
+    if not fresh and os.path.exists(cache_path):
+        with open(cache_path, "r") as f:
+            rules = json.load(f)
+        if rules.get("keywords"):
+            print(f"  loaded {len(rules['keywords'])} keyword rules (cached)")
+            return rules
+
+    prompt = f"""Category: "{category_description}"
+
+Generate simple heuristic rules for detecting emails in this category.
+Output a JSON object with these keys:
+- "keywords": list of 5-8 words/phrases that would appear in matching emails (subject or body)
+- "sender_hints": list of 3-5 sender names or domains that would send these emails
+- "exclude_keywords": list of 3-5 words that indicate an email does NOT match even if it looks similar
+
+Be specific to this category. Output ONLY the JSON object:"""
+
+    print("  generating heuristic rules...")
+    raw = call_ollama(prompt, temperature=0)
+    rules = parse_json_response(raw)
+
+    if not isinstance(rules, dict) or "keywords" not in rules:
+        rules = {"keywords": [], "sender_hints": [], "exclude_keywords": []}
+
+    for key in ("keywords", "sender_hints", "exclude_keywords"):
+        if key not in rules or not isinstance(rules[key], list):
+            rules[key] = []
+        rules[key] = [str(item).lower().strip() for item in rules[key] if item]
+
+    exclude_set = set(rules["exclude_keywords"])
+    rules["keywords"] = [k for k in rules["keywords"] if k not in exclude_set]
+
+    with open(cache_path, "w") as f:
+        json.dump(rules, f, indent=2)
+
+    return rules
+
+
+def score_rules(msg, rules):
+    """score an email against heuristic rules. returns a float."""
+    text = f"{msg.get('subject', '')} {msg.get('snippet', '')}".lower()
+    body = decode_body(msg.get("body", "")).lower()
+    sender = msg.get("from", "").lower()
+    full_text = f"{text} {body}"
+
+    score = 0
+    for kw in rules.get("keywords", []):
+        if kw in full_text:
+            score += 1
+    for hint in rules.get("sender_hints", []):
+        if hint in sender:
+            score += 1
+    for excl in rules.get("exclude_keywords", []):
+        if excl in full_text:
+            score -= 1
+
+    return score
+
+
 def cosine_sim(a, b):
     norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
     if norm_a == 0 or norm_b == 0:
@@ -240,6 +304,8 @@ def classify(messages, category_description, feedback=None, fresh=False):
         print("ERROR: couldnt generate examples")
         return []
 
+    rules = generate_heuristic_rules(category_description, fresh=fresh)
+
     print("  loading embedding model...")
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -257,6 +323,7 @@ def classify(messages, category_description, feedback=None, fresh=False):
 
     print(f"  classifying...\n")
     classifications = []
+    rule_tiebreaks = 0
 
     for msg, email_emb in zip(messages, all_emb):
         yes_sim = cosine_sim(email_emb, yes_centroid)
@@ -264,13 +331,21 @@ def classify(messages, category_description, feedback=None, fresh=False):
         margin = abs(yes_sim - no_sim)
 
         if margin < MARGIN_THRESHOLD:
-            is_match = False
+            rscore = score_rules(msg, rules)
+            if rscore > 0:
+                is_match = True
+                rule_tiebreaks += 1
+            else:
+                is_match = False
         else:
             is_match = yes_sim > no_sim
 
         classifications.append(is_match)
         status = "YES" if is_match else " no"
         print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+
+    if rule_tiebreaks:
+        print(f"\n  rules broke {rule_tiebreaks} tiebreak(s)")
 
     print(f"\n  generating explanations (batch)...")
     explanations = generate_explanations_batch(messages, classifications, category_description)
@@ -309,12 +384,14 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
     print(f"categories: {categories}\n")
 
     category_examples = {}
+    category_rules = {}
     for cat in categories:
         yes_texts, no_texts, edge_texts = generate_synthetic_examples(cat, fresh=fresh)
         if not yes_texts or not no_texts:
             print(f"  WARNING: couldnt generate examples for \"{cat}\", skipping")
             continue
         category_examples[cat] = (yes_texts, no_texts, edge_texts)
+        category_rules[cat] = generate_heuristic_rules(cat, fresh=fresh)
 
     if not category_examples:
         print("ERROR: no valid categories")
@@ -330,6 +407,7 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
     all_results = {}
     for cat, (yes_texts, no_texts, edge_texts) in category_examples.items():
         print(f"\n  --- {cat} ---")
+        rules = category_rules[cat]
 
         yes_emb = model.encode(yes_texts)
         no_all = no_texts + edge_texts
@@ -339,19 +417,28 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
         no_centroid = np.mean(no_emb, axis=0)
 
         classifications = []
+        rule_tiebreaks = 0
         for msg, email_emb in zip(messages, all_emb):
             yes_sim = cosine_sim(email_emb, yes_centroid)
             no_sim = cosine_sim(email_emb, no_centroid)
             margin = abs(yes_sim - no_sim)
 
             if margin < MARGIN_THRESHOLD:
-                is_match = False
+                rscore = score_rules(msg, rules)
+                if rscore > 0:
+                    is_match = True
+                    rule_tiebreaks += 1
+                else:
+                    is_match = False
             else:
                 is_match = yes_sim > no_sim
 
             classifications.append(is_match)
             status = "YES" if is_match else " no"
             print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+
+        if rule_tiebreaks:
+            print(f"  rules broke {rule_tiebreaks} tiebreak(s)")
 
         print(f"  generating explanations (batch)...")
         explanations = generate_explanations_batch(messages, classifications, cat)
