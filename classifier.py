@@ -24,10 +24,6 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
 MARGIN_THRESHOLD = 0.05
 
-# tried KNN k=5 but centroids average out noise better
-USE_KNN = False
-KNN_K = 5
-
 
 def load_messages(path):
     messages = []
@@ -107,6 +103,7 @@ def parse_json_response(raw_text):
 
 
 def generate_synthetic_examples(category_description):
+    """generate synthetic yes/no emails for this category"""
     prompt = f"""Generate synthetic emails for this category: "{category_description}"
 
 JSON array, 12 objects. Keys: label, from, subject, body, reason. Keep body under 10 words.
@@ -153,25 +150,30 @@ def cosine_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-def knn_classify(email_emb, yes_embs, no_embs, k=KNN_K):
-    """classify by k nearest neighbors vote instead of centroids"""
-    all_embs = list(yes_embs) + list(no_embs)
-    all_labels = [True] * len(yes_embs) + [False] * len(no_embs)
+def generate_explanation(msg, category_description, is_match):
+    """ask ollama for a short plain english explanation"""
+    if is_match:
+        prompt = f"""Category: "{category_description}"
+Email from {msg.get('from', '')} with subject "{msg.get('subject', '')}"
+This email MATCHES the category. Write one short sentence (under 15 words) explaining why it matches. Mention the sender or subject. Just the sentence, nothing else."""
+    else:
+        prompt = f"""Category: "{category_description}"
+Email from {msg.get('from', '')} with subject "{msg.get('subject', '')}"
+This email DOES NOT match the category. Write one short sentence (under 15 words) explaining why it doesn't match. Mention the sender or subject. Just the sentence, nothing else."""
 
-    sims = [(cosine_sim(email_emb, emb), label) for emb, label in zip(all_embs, all_labels)]
-    sims.sort(key=lambda x: x[0], reverse=True)
-
-    top_k = sims[:k]
-    yes_votes = sum(1 for _, label in top_k if label)
-    no_votes = k - yes_votes
-
-    return yes_votes > no_votes, yes_votes, no_votes
+    try:
+        raw = call_ollama(prompt)
+        explanation = raw.strip().split("\n")[0].strip('"').strip("'").strip()
+        if len(explanation) > 150:
+            explanation = explanation[:150] + "..."
+        return explanation
+    except Exception:
+        return f"{'matches' if is_match else 'does not match'} category"
 
 
 def classify(messages, category_description):
     print(f"\n=== classifier ===")
-    print(f"category: \"{category_description}\"")
-    print(f"method: {'KNN k={}'.format(KNN_K) if USE_KNN else 'centroids'}\n")
+    print(f"category: \"{category_description}\"\n")
 
     yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description)
     if not yes_texts or not no_texts:
@@ -185,9 +187,8 @@ def classify(messages, category_description):
     yes_emb = model.encode(yes_texts)
     no_emb = model.encode(no_texts)
 
-    if not USE_KNN:
-        yes_centroid = np.mean(yes_emb, axis=0)
-        no_centroid = np.mean(no_emb, axis=0)
+    yes_centroid = np.mean(yes_emb, axis=0)
+    no_centroid = np.mean(no_emb, axis=0)
 
     print(f"  classifying {len(messages)} emails...\n")
     results = []
@@ -196,31 +197,28 @@ def classify(messages, category_description):
         email_text = email_to_text(msg)
         email_emb = model.encode([email_text])[0]
 
-        if USE_KNN:
-            is_match, yes_votes, no_votes = knn_classify(email_emb, yes_emb, no_emb)
-            detail = f"knn votes: {yes_votes} yes, {no_votes} no"
+        yes_sim = cosine_sim(email_emb, yes_centroid)
+        no_sim = cosine_sim(email_emb, no_centroid)
+
+        margin = abs(yes_sim - no_sim)
+
+        if margin < MARGIN_THRESHOLD:
+            is_match = False
         else:
-            yes_sim = cosine_sim(email_emb, yes_centroid)
-            no_sim = cosine_sim(email_emb, no_centroid)
-            margin = abs(yes_sim - no_sim)
-
-            if margin < MARGIN_THRESHOLD:
-                is_match = False
-            else:
-                is_match = yes_sim > no_sim
-
-            detail = f"yes_sim={yes_sim:.3f} no_sim={no_sim:.3f} margin={margin:.3f}"
+            is_match = yes_sim > no_sim
 
         status = "YES" if is_match else " no"
         print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
-        print(f"        {detail}")
+
+        explanation = generate_explanation(msg, category_description, is_match)
 
         result = {
             "message_id": msg["id"],
             "is_in_category": bool(is_match),
-            "explanation": f"{'similar to positive' if is_match else 'similar to negative'} examples ({detail})",
+            "explanation": explanation,
         }
         results.append(result)
+        print(f"        -> {explanation}")
 
     return results
 

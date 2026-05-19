@@ -67,3 +67,13 @@ tried multi-round generation too generate twice and combine. nope second round c
 
 reverting evrything. centroid + diverse negatives + threshold is the most stable combo. left the KNN code in but disabled it
 
+---
+
+## explanations
+
+added second LLM call per email for plain english explanations. instead of similarity scores you get "matches bc its from Delta about a travel receipt"
+
+bug: LLM said "does not match" for an email classified yes. split into two prompts one for matches one for non-matches. fixed it
+
+tradeoff: 1 extra LLM call per email
+
