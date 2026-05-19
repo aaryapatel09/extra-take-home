@@ -21,8 +21,8 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 MARGIN_THRESHOLD = 0.05
 
 
@@ -48,8 +48,11 @@ def decode_body(body_b64):
 
 def email_to_text(msg):
     body = decode_body(msg.get("body", ""))
+    to = ", ".join(msg["to"]) if isinstance(msg.get("to"), list) else msg.get("to", "")
     parts = [
         f"From: {msg.get('from', '')}",
+        f"To: {to}",
+        f"Date: {msg.get('date', '')}",
         f"Subject: {msg.get('subject', '')}",
         f"Snippet: {msg.get('snippet', '')}",
         f"Body: {body}",
@@ -57,15 +60,20 @@ def email_to_text(msg):
     return "\n".join(parts)
 
 
-def call_ollama(prompt):
-    resp = requests.post(OLLAMA_URL, json={
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 8000},
-    })
-    resp.raise_for_status()
-    return resp.json()["response"]
+def call_ollama(prompt, temperature=0.7):
+    try:
+        resp = requests.post(OLLAMA_URL, json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": 8000},
+        })
+        resp.raise_for_status()
+        return resp.json()["response"]
+    except requests.ConnectionError:
+        print(f"\n  ERROR: cant connect to ollama at {OLLAMA_URL}")
+        print(f"  make sure ollama is running (ollama serve) and {OLLAMA_MODEL} is pulled")
+        sys.exit(1)
 
 
 def parse_json_response(raw_text):
@@ -147,7 +155,7 @@ IMPORTANT: every single example must have a unique sender and subject. no repeat
 Output ONLY the JSON array:"""
 
     print("  generating synthetic examples...")
-    raw = call_ollama(prompt)
+    raw = call_ollama(prompt, temperature=0)
     examples = parse_json_response(raw)
 
     if not examples or not isinstance(examples, list):
@@ -163,28 +171,45 @@ Output ONLY the JSON array:"""
 
 
 def cosine_sim(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    norm_a, norm_b = np.linalg.norm(a), np.linalg.norm(b)
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return np.dot(a, b) / (norm_a * norm_b)
 
 
-def generate_explanation(msg, category_description, is_match):
-    """ask ollama for a short plain english explanation"""
-    if is_match:
-        prompt = f"""Category: "{category_description}"
-Email from {msg.get('from', '')} with subject "{msg.get('subject', '')}"
-This email MATCHES the category. Write one short sentence (under 15 words) explaining why it matches. Mention the sender or subject. Just the sentence, nothing else."""
-    else:
-        prompt = f"""Category: "{category_description}"
-Email from {msg.get('from', '')} with subject "{msg.get('subject', '')}"
-This email DOES NOT match the category. Write one short sentence (under 15 words) explaining why it doesn't match. Mention the sender or subject. Just the sentence, nothing else."""
+def generate_explanations_batch(messages, classifications, category_description):
+    """generate explanations for all emails in a single LLM call"""
+    lines = []
+    for i, (msg, is_match) in enumerate(zip(messages, classifications)):
+        tag = "YES" if is_match else "NO"
+        lines.append(f"{i+1}. [{tag}] From: {msg.get('from', '')} Subject: \"{msg.get('subject', '')}\"")
+
+    prompt = f"""Category: "{category_description}"
+
+For each email below, write ONE short sentence (under 15 words) explaining why it matches or doesn't match the category. Mention the sender or subject.
+
+{chr(10).join(lines)}
+
+Output a JSON array of {len(messages)} explanation strings, in order. Output ONLY the JSON array:"""
 
     try:
         raw = call_ollama(prompt)
-        explanation = raw.strip().split("\n")[0].strip('"').strip("'").strip()
-        if len(explanation) > 150:
-            explanation = explanation[:150] + "..."
-        return explanation
+        parsed = parse_json_response(raw)
+        if isinstance(parsed, list) and len(parsed) >= len(messages):
+            explanations = []
+            for item in parsed[:len(messages)]:
+                exp = str(item).strip().strip('"').strip("'")
+                if len(exp) > 150:
+                    exp = exp[:150] + "..."
+                explanations.append(exp)
+            return explanations
     except Exception:
-        return f"{'matches' if is_match else 'does not match'} category"
+        pass
+
+    return [
+        f"{'matches' if is_match else 'does not match'} \"{category_description}\""
+        for is_match in classifications
+    ]
 
 
 def get_feedback_path(category_description):
@@ -231,12 +256,11 @@ def classify(messages, category_description, feedback=None, fresh=False):
     all_emb = model.encode(email_texts)
 
     print(f"  classifying...\n")
-    results = []
+    classifications = []
 
     for msg, email_emb in zip(messages, all_emb):
         yes_sim = cosine_sim(email_emb, yes_centroid)
         no_sim = cosine_sim(email_emb, no_centroid)
-
         margin = abs(yes_sim - no_sim)
 
         if margin < MARGIN_THRESHOLD:
@@ -244,18 +268,22 @@ def classify(messages, category_description, feedback=None, fresh=False):
         else:
             is_match = yes_sim > no_sim
 
+        classifications.append(is_match)
         status = "YES" if is_match else " no"
         print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
 
-        explanation = generate_explanation(msg, category_description, is_match)
+    print(f"\n  generating explanations (batch)...")
+    explanations = generate_explanations_batch(messages, classifications, category_description)
 
+    results = []
+    for msg, is_match, explanation in zip(messages, classifications, explanations):
         result = {
             "message_id": msg["id"],
             "is_in_category": bool(is_match),
             "explanation": explanation,
         }
         results.append(result)
-        print(f"        -> {explanation}")
+        print(f"        {msg['id']}: {explanation}")
 
     if feedback:
         applied = 0
@@ -310,7 +338,7 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
         yes_centroid = np.mean(yes_emb, axis=0)
         no_centroid = np.mean(no_emb, axis=0)
 
-        results = []
+        classifications = []
         for msg, email_emb in zip(messages, all_emb):
             yes_sim = cosine_sim(email_emb, yes_centroid)
             no_sim = cosine_sim(email_emb, no_centroid)
@@ -321,17 +349,22 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
             else:
                 is_match = yes_sim > no_sim
 
+            classifications.append(is_match)
             status = "YES" if is_match else " no"
             print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
 
-            explanation = generate_explanation(msg, cat, is_match)
+        print(f"  generating explanations (batch)...")
+        explanations = generate_explanations_batch(messages, classifications, cat)
+
+        results = []
+        for msg, is_match, explanation in zip(messages, classifications, explanations):
             result = {
                 "message_id": msg["id"],
                 "is_in_category": bool(is_match),
                 "explanation": explanation,
             }
             results.append(result)
-            print(f"        -> {explanation}")
+            print(f"        {msg['id']}: {explanation}")
 
         feedback = feedbacks.get(cat, {})
         if feedback:

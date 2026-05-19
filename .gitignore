@@ -10,3 +10,4 @@ build/
 synthetic_*.json
 pipeline_*.json
 feedback_*.json
+.pytest_cache/

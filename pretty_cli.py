@@ -4,6 +4,7 @@
 import sys
 import os
 import re
+import io
 import time
 import threading
 from classifier import (
@@ -341,10 +342,14 @@ def main():
         spinner = Spinner("classifying your emails")
         spinner.start()
 
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+
         if len(categories) == 1:
             category = categories[0]
             fb = load_feedback(category)
             results = classify(messages, category, fb if fb else None, fresh=fresh)
+            sys.stdout = old_stdout
             spinner.stop(f"classified {len(results)} emails")
             show_results(results, messages)
             last_categories = categories
@@ -357,6 +362,7 @@ def main():
                     feedbacks[cat] = fb
 
             all_results = classify_multi(messages, categories, feedbacks, fresh=fresh)
+            sys.stdout = old_stdout
             spinner.stop(f"classified across {len(categories)} categories")
 
             for cat, results in all_results.items():
