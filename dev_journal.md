@@ -51,3 +51,19 @@ noticed results change between runs tho. ollama generates diff examples each tim
 
 AA personal trip still wrong — embeddings cant tell work trip from personal trip. margin is 0.2+ so threshold cant help
 
+---
+
+## ok trying KNN + pipeline
+
+maybe KNN k=5 instead of centroids? individual examples vote instead of averaging into one point
+
+also tried breaking category into sub-questions w AND/OR/NOT logic so "work NOT meetings" becomes two classifiers chained
+
+pipeline: LLM decomposed into 3 steps, three noisy classifiers ANDed = nothing passes. travel went 0/12. had to force 2 steps. then LLM hallucinated negation where there shoudlnt be one
+
+KNN: actually worse than centroids on most runs?? i think centroids average out noise from bad synthetic examples. KNN gets thrown off by individual bad ones
+
+tried multi-round generation too generate twice and combine. nope second round contradicts the first
+
+reverting evrything. centroid + diverse negatives + threshold is the most stable combo. left the KNN code in but disabled it
+

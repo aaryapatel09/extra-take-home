@@ -7,3 +7,5 @@ output/
 *.egg-info/
 dist/
 build/
+synthetic_*.json
+pipeline_*.json

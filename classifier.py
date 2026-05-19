@@ -6,6 +6,9 @@ approach: synthetic contrastive examples
 - ask local LLM (ollama) to generate synthetic "yes" and "no" example emails
 - embed everything with sentence-transformers (free, local)
 - classify each real email by cosine similarity to yes/no centroids
+
+tried KNN and pipeline decomposition but centroid is more stable
+with noisy synthetic data (see dev_journal.md)
 """
 
 import json
@@ -20,6 +23,10 @@ from sentence_transformers import SentenceTransformer
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
 MARGIN_THRESHOLD = 0.05
+
+# tried KNN k=5 but centroids average out noise better
+USE_KNN = False
+KNN_K = 5
 
 
 def load_messages(path):
@@ -135,7 +142,6 @@ Output ONLY the JSON array:"""
 
     print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples")
 
-    # dump for debugging
     safe_name = re.sub(r"[^a-z0-9]+", "_", category_description.lower()).strip("_")
     with open(f"synthetic_{safe_name}.json", "w") as f:
         json.dump(examples, f, indent=2)
@@ -143,9 +149,29 @@ Output ONLY the JSON array:"""
     return yes_texts, no_texts, edge_texts
 
 
+def cosine_sim(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+
+def knn_classify(email_emb, yes_embs, no_embs, k=KNN_K):
+    """classify by k nearest neighbors vote instead of centroids"""
+    all_embs = list(yes_embs) + list(no_embs)
+    all_labels = [True] * len(yes_embs) + [False] * len(no_embs)
+
+    sims = [(cosine_sim(email_emb, emb), label) for emb, label in zip(all_embs, all_labels)]
+    sims.sort(key=lambda x: x[0], reverse=True)
+
+    top_k = sims[:k]
+    yes_votes = sum(1 for _, label in top_k if label)
+    no_votes = k - yes_votes
+
+    return yes_votes > no_votes, yes_votes, no_votes
+
+
 def classify(messages, category_description):
     print(f"\n=== classifier ===")
-    print(f"category: \"{category_description}\"\n")
+    print(f"category: \"{category_description}\"")
+    print(f"method: {'KNN k={}'.format(KNN_K) if USE_KNN else 'centroids'}\n")
 
     yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description)
     if not yes_texts or not no_texts:
@@ -159,8 +185,9 @@ def classify(messages, category_description):
     yes_emb = model.encode(yes_texts)
     no_emb = model.encode(no_texts)
 
-    yes_centroid = np.mean(yes_emb, axis=0)
-    no_centroid = np.mean(no_emb, axis=0)
+    if not USE_KNN:
+        yes_centroid = np.mean(yes_emb, axis=0)
+        no_centroid = np.mean(no_emb, axis=0)
 
     print(f"  classifying {len(messages)} emails...\n")
     results = []
@@ -169,28 +196,29 @@ def classify(messages, category_description):
         email_text = email_to_text(msg)
         email_emb = model.encode([email_text])[0]
 
-        yes_sim = np.dot(email_emb, yes_centroid) / (
-            np.linalg.norm(email_emb) * np.linalg.norm(yes_centroid)
-        )
-        no_sim = np.dot(email_emb, no_centroid) / (
-            np.linalg.norm(email_emb) * np.linalg.norm(no_centroid)
-        )
-
-        margin = abs(yes_sim - no_sim)
-
-        if margin < MARGIN_THRESHOLD:
-            is_match = False
+        if USE_KNN:
+            is_match, yes_votes, no_votes = knn_classify(email_emb, yes_emb, no_emb)
+            detail = f"knn votes: {yes_votes} yes, {no_votes} no"
         else:
-            is_match = yes_sim > no_sim
+            yes_sim = cosine_sim(email_emb, yes_centroid)
+            no_sim = cosine_sim(email_emb, no_centroid)
+            margin = abs(yes_sim - no_sim)
+
+            if margin < MARGIN_THRESHOLD:
+                is_match = False
+            else:
+                is_match = yes_sim > no_sim
+
+            detail = f"yes_sim={yes_sim:.3f} no_sim={no_sim:.3f} margin={margin:.3f}"
 
         status = "YES" if is_match else " no"
         print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
-        print(f"        yes_sim={yes_sim:.3f} no_sim={no_sim:.3f} margin={margin:.3f}")
+        print(f"        {detail}")
 
         result = {
             "message_id": msg["id"],
             "is_in_category": bool(is_match),
-            "explanation": f"{'similar to positive' if is_match else 'similar to negative'} examples (yes_sim={yes_sim:.3f}, no_sim={no_sim:.3f})",
+            "explanation": f"{'similar to positive' if is_match else 'similar to negative'} examples ({detail})",
         }
         results.append(result)
 
