@@ -4,7 +4,7 @@
 import sys
 import os
 import re
-import io
+import logging
 import time
 import threading
 from classifier import (
@@ -13,6 +13,7 @@ from classifier import (
     classify_multi,
     load_feedback,
     save_feedback,
+    OllamaConnectionError,
 )
 
 
@@ -308,6 +309,8 @@ def goodbye():
 # ── main loop ──────────────────────────────────────────────
 
 def main():
+    logging.getLogger("classifier").setLevel(logging.WARNING)
+
     messages_file = sys.argv[1] if len(sys.argv) > 1 else "messages.jsonl"
     messages = load_messages(messages_file)
 
@@ -342,38 +345,37 @@ def main():
         spinner = Spinner("classifying your emails")
         spinner.start()
 
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
+        try:
+            if len(categories) == 1:
+                category = categories[0]
+                fb = load_feedback(category)
+                results = classify(messages, category, fb if fb else None, fresh=fresh)
+                spinner.stop(f"classified {len(results)} emails")
+                show_results(results, messages)
+                last_categories = categories
+                correction_loop(results, category)
+            else:
+                feedbacks = {}
+                for cat in categories:
+                    fb = load_feedback(cat)
+                    if fb:
+                        feedbacks[cat] = fb
 
-        if len(categories) == 1:
-            category = categories[0]
-            fb = load_feedback(category)
-            results = classify(messages, category, fb if fb else None, fresh=fresh)
-            sys.stdout = old_stdout
-            spinner.stop(f"classified {len(results)} emails")
-            show_results(results, messages)
-            last_categories = categories
-            correction_loop(results, category)
-        else:
-            feedbacks = {}
-            for cat in categories:
-                fb = load_feedback(cat)
-                if fb:
-                    feedbacks[cat] = fb
+                all_results = classify_multi(messages, categories, feedbacks, fresh=fresh)
+                spinner.stop(f"classified across {len(categories)} categories")
 
-            all_results = classify_multi(messages, categories, feedbacks, fresh=fresh)
-            sys.stdout = old_stdout
-            spinner.stop(f"classified across {len(categories)} categories")
+                for cat, results in all_results.items():
+                    show_results(results, messages, category=cat)
 
-            for cat, results in all_results.items():
-                show_results(results, messages, category=cat)
+                last_categories = categories
 
-            last_categories = categories
-
-            for cat, results in all_results.items():
-                cat_display = gradient_text(cat, [BLUSH, SAKURA, ROSE])
-                print(f"    {PETAL}  {BOLD}{cat_display}{RESET} {MUTED}corrections:{RESET}")
-                correction_loop(results, cat)
+                for cat, results in all_results.items():
+                    cat_display = gradient_text(cat, [BLUSH, SAKURA, ROSE])
+                    print(f"    {PETAL}  {BOLD}{cat_display}{RESET} {MUTED}corrections:{RESET}")
+                    correction_loop(results, cat)
+        except OllamaConnectionError as e:
+            spinner.stop()
+            print(f"\n    {DEEP_ROSE}error: {e}{RESET}\n")
 
     goodbye()
 

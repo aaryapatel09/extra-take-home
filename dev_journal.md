@@ -128,3 +128,37 @@ this means rules never override a strong embedding signal. they only help in the
 also had a bug where the LLM generated overlapping keywords — "travel" appeared in both keywords and exclude_keywords for "work travel receipts" because it included "travel blog" as an exclusion pattern. had to deduplicate by removing any keyword that also appears in the exclude list
 
 rules are cached alongside synthetic examples. one extra ollama call per category, cached to disk after first run
+
+---
+
+## hardening pass
+
+went back through everything and fixed a bunch of stuff that was bugging me
+
+### print → logging
+
+classifier.py used print() for everything — progress messages, errors, debug info. pretty_cli.py had this gross hack where it redirected sys.stdout to io.StringIO during classify() to hide the prints from the spinner. if json parsing failed the error message literally vanished into the void
+
+switched everything to `logging.getLogger(__name__)`. cli.py configures logging at INFO level so you see progress. pretty_cli.py sets classifier logger to WARNING so the spinner runs clean. no more stdout redirect
+
+### sys.exit in library code
+
+call_ollama had sys.exit(1) on connection error. fine for cli mode but if you import classify() as a library it kills your whole process. replaced with OllamaConnectionError exception. both CLIs catch it and show the error nicely
+
+### explanation batch was fragile
+
+the batch explanation prompt returned a JSON array and we matched by position. if the LLM returned fewer items or reordered them, explanations would silently attach to the wrong emails. happened once during testing — LLM skipped an explanation and every subsequent email got the wrong one
+
+switched to ID-keyed output: prompt includes message IDs, LLM returns `{"174a9": "explanation", ...}`, we match by key. falls back to positional if LLM returns an array instead. and falls back to generic if everything fails
+
+### committed fixtures for reproducibility
+
+the synthetic examples and rules were gitignored (they're runtime cache). which meant tests couldnt assert classification accuracy — they could only check the plumbing (right keys, right types). a new clone couldnt reproduce the sample run results either
+
+created fixtures/ with golden synthetic examples and rules for the travel receipts category. hand-curated — diverse senders, realistic subjects, no duplicates. test suite loads these fixtures + real messages.jsonl + real embedding model and asserts Delta=yes, United=yes, Mom=no, GitHub=no, etc. if someone breaks classification quality the test catches it
+
+also added fixture quality assertions — checks that yes examples mention airline content, no examples span at least 4 different types (shopping, family, work, newsletter, notification), all senders unique
+
+### test count 77 → 101
+
+new tests: explanation ID-matching (3), reorder tolerance, array fallback, empty messages, tiebreaker through full classify pipeline with controlled embeddings, OllamaConnectionError (connection, HTTP, bad JSON), timeout verification, fixture existence, fixture quality validation, end-to-end classification accuracy, single-message classify, result ID matching, explanation count matching, JSON serialization roundtrip, multi-category with single category, score_rules edge cases (missing body, case insensitivity), parse_json edge cases (empty dict, empty array, unicode), decode_body edge cases (large content, mixed HTML/text)

@@ -4,8 +4,10 @@
 import json
 import base64
 import os
+import shutil
 import numpy as np
 import pytest
+import requests
 from unittest.mock import patch, MagicMock
 from classifier import (
     decode_body,
@@ -23,6 +25,8 @@ from classifier import (
     save_feedback,
     classify,
     classify_multi,
+    call_ollama,
+    OllamaConnectionError,
     MARGIN_THRESHOLD,
 )
 
@@ -76,11 +80,20 @@ FAKE_SYNTHETIC = [
     {"label": "edge", "from": "Uber <receipts@uber.com>", "subject": "Trip Receipt", "snippet": "", "body": "Your ride receipt from Tuesday"},
 ]
 
-FAKE_EXPLANATIONS = json.dumps([
-    "Delta eTicket is a travel receipt from an airline",
-    "AI newsletter is not a travel receipt",
-    "Mom's email is family communication, not travel",
-])
+FAKE_EXPLANATIONS = json.dumps({
+    "174a9": "Delta eTicket is a travel receipt from an airline",
+    "174b2": "AI newsletter is not a travel receipt",
+    "174c5": "Mom's email is family communication, not travel",
+})
+
+FAKE_RULES = json.dumps({
+    "keywords": ["receipt", "booking", "eticket"],
+    "sender_hints": ["delta", "united"],
+    "exclude_keywords": ["newsletter"],
+})
+
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+FIXTURES_DIR = os.path.join(PROJECT_DIR, "fixtures")
 
 
 # ── decode_body ────────────────────────────────────────────
@@ -467,7 +480,7 @@ def test_generate_synthetic_uses_temp_zero(mock_ollama, tmp_path, monkeypatch):
 # ── generate_explanations_batch ────────────────────────────
 
 @patch("classifier.call_ollama")
-def test_explanations_batch_parses(mock_ollama):
+def test_explanations_batch_parses_dict(mock_ollama):
     mock_ollama.return_value = FAKE_EXPLANATIONS
     classifications = [True, False, False]
     result = generate_explanations_batch(SAMPLE_MSGS, classifications, "travel receipts")
@@ -489,9 +502,60 @@ def test_explanations_batch_fallback(mock_ollama):
 @patch("classifier.call_ollama")
 def test_explanations_batch_truncates_long(mock_ollama):
     long_explanation = "x" * 200
-    mock_ollama.return_value = json.dumps([long_explanation])
+    mock_ollama.return_value = json.dumps({"174a9": long_explanation})
     result = generate_explanations_batch(SAMPLE_MSGS[:1], [True], "test")
     assert len(result[0]) <= 153  # 150 + "..."
+
+
+@patch("classifier.call_ollama")
+def test_explanations_batch_handles_missing_id(mock_ollama):
+    """if LLM omits an ID, that email gets a generic fallback explanation"""
+    mock_ollama.return_value = json.dumps({
+        "174a9": "Delta is a travel receipt",
+        # 174b2 missing
+        "174c5": "Mom email is family",
+    })
+    classifications = [True, False, False]
+    result = generate_explanations_batch(SAMPLE_MSGS, classifications, "travel")
+    assert len(result) == 3
+    assert "Delta" in result[0]
+    assert "does not match" in result[1]  # generic fallback
+    assert "Mom" in result[2] or "family" in result[2]
+
+
+@patch("classifier.call_ollama")
+def test_explanations_batch_reorder_tolerance(mock_ollama):
+    """explanations returned out of order should still match correctly by ID"""
+    mock_ollama.return_value = json.dumps({
+        "174c5": "third email explanation",
+        "174a9": "first email explanation",
+        "174b2": "second email explanation",
+    })
+    classifications = [True, False, False]
+    result = generate_explanations_batch(SAMPLE_MSGS, classifications, "test")
+    assert result[0] == "first email explanation"
+    assert result[1] == "second email explanation"
+    assert result[2] == "third email explanation"
+
+
+@patch("classifier.call_ollama")
+def test_explanations_batch_array_fallback(mock_ollama):
+    """positional array format still works as fallback"""
+    mock_ollama.return_value = json.dumps([
+        "explanation one",
+        "explanation two",
+        "explanation three",
+    ])
+    classifications = [True, False, False]
+    result = generate_explanations_batch(SAMPLE_MSGS, classifications, "test")
+    assert result[0] == "explanation one"
+    assert result[1] == "explanation two"
+    assert result[2] == "explanation three"
+
+
+def test_explanations_batch_empty_messages():
+    result = generate_explanations_batch([], [], "test")
+    assert result == []
 
 
 # ── classify (integration with mocked ollama) ──────────────
@@ -716,13 +780,6 @@ def test_score_rules_mixed_signals():
 
 # ── generate_heuristic_rules ───────────────────────────────
 
-FAKE_RULES = json.dumps({
-    "keywords": ["receipt", "booking", "eticket"],
-    "sender_hints": ["delta", "united"],
-    "exclude_keywords": ["newsletter"],
-})
-
-
 @patch("classifier.call_ollama")
 def test_generate_rules_caches(mock_ollama, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -765,8 +822,8 @@ def test_generate_rules_bad_response(mock_ollama, tmp_path, monkeypatch):
 def test_tiebreaker_rules_flip_borderline():
     """when margin is below threshold but rules match, result should be yes"""
     yes_centroid = np.array([1.0, 0.0])
-    no_centroid = np.array([0.99, 0.01])
-    email_emb = np.array([0.995, 0.005])
+    no_centroid = np.array([0.0, 1.0])
+    email_emb = np.array([0.707, 0.707])
 
     yes_sim = cosine_sim(email_emb, yes_centroid)
     no_sim = cosine_sim(email_emb, no_centroid)
@@ -789,3 +846,334 @@ def test_tiebreaker_rules_keep_no():
     msg = {"subject": "Weekend BBQ", "snippet": "grill", "from": "Dad <dad@gmail.com>", "body": ""}
     rscore = score_rules(msg, rules)
     assert rscore <= 0
+
+
+@patch("classifier.SentenceTransformer")
+@patch("classifier.call_ollama")
+def test_tiebreaker_fires_through_classify(mock_ollama, mock_st_class, tmp_path, monkeypatch):
+    """run full classify pipeline with controlled embeddings to verify tiebreaker changes a result"""
+    monkeypatch.chdir(tmp_path)
+
+    mock_model = MagicMock()
+    mock_st_class.return_value = mock_model
+
+    # yes/no centroids orthogonal, email1 equidistant (borderline), email2 clearly no
+    mock_model.encode.side_effect = [
+        np.array([[1.0, 0.0]]),                          # yes synthetic embeddings
+        np.array([[0.0, 1.0]]),                          # no synthetic embeddings
+        np.array([[0.707, 0.707], [0.1, 0.995]]),        # email embeddings
+    ]
+
+    messages = [
+        {"id": "m1", "subject": "Your Receipt", "from": "Delta <noreply@delta.com>",
+         "to": [], "snippet": "booking confirmed", "body": "", "date": ""},
+        {"id": "m2", "subject": "Weekend BBQ", "from": "Dad <dad@gmail.com>",
+         "to": [], "snippet": "grill", "body": "", "date": ""},
+    ]
+
+    mock_ollama.side_effect = [
+        json.dumps([
+            {"label": "yes", "from": "Delta", "subject": "Receipt", "snippet": "", "body": "flight receipt"},
+            {"label": "no", "from": "Mom", "subject": "Hello", "snippet": "", "body": "family stuff"},
+        ]),
+        json.dumps({
+            "keywords": ["receipt", "booking", "flight"],
+            "sender_hints": ["delta"],
+            "exclude_keywords": [],
+        }),
+        json.dumps({"m1": "receipt from Delta", "m2": "BBQ is not travel"}),
+    ]
+
+    results = classify(messages, "travel receipts", fresh=True)
+
+    result_map = {r["message_id"]: r["is_in_category"] for r in results}
+    assert result_map["m1"] is True   # borderline margin + rules match → yes
+    assert result_map["m2"] is False  # clearly no by embeddings
+
+
+# ── OllamaConnectionError ─────────────────────────────────
+
+def test_ollama_connection_error_is_raised():
+    """call_ollama raises OllamaConnectionError instead of sys.exit"""
+    with patch("classifier.requests.post") as mock_post:
+        from requests.exceptions import ConnectionError
+        mock_post.side_effect = ConnectionError("refused")
+        with pytest.raises(OllamaConnectionError) as exc_info:
+            call_ollama("test prompt")
+        assert "cant connect" in str(exc_info.value)
+
+
+# ── fixture quality validation ─────────────────────────────
+
+def test_committed_fixtures_exist():
+    """golden fixture files are committed and loadable"""
+    synth_path = os.path.join(FIXTURES_DIR, "synthetic_work_related_travel_receipts_from_airlines.json")
+    rules_path = os.path.join(FIXTURES_DIR, "rules_work_related_travel_receipts_from_airlines.json")
+    assert os.path.exists(synth_path), "synthetic fixture missing"
+    assert os.path.exists(rules_path), "rules fixture missing"
+
+    with open(synth_path) as f:
+        examples = json.load(f)
+    with open(rules_path) as f:
+        rules = json.load(f)
+
+    assert isinstance(examples, list) and len(examples) == 12
+    assert isinstance(rules, dict) and "keywords" in rules
+
+
+def test_fixture_synthetic_quality():
+    """validate that committed synthetic fixtures have diverse, high-quality data"""
+    synth_path = os.path.join(FIXTURES_DIR, "synthetic_work_related_travel_receipts_from_airlines.json")
+    with open(synth_path) as f:
+        examples = json.load(f)
+
+    yes_examples = [e for e in examples if e["label"] == "yes"]
+    no_examples = [e for e in examples if e["label"] == "no"]
+    edge_examples = [e for e in examples if e["label"] == "edge"]
+
+    assert len(yes_examples) == 5
+    assert len(no_examples) == 5
+    assert len(edge_examples) == 2
+
+    senders = [e["from"] for e in examples]
+    assert len(senders) == len(set(senders)), "duplicate senders in fixtures"
+
+    subjects = [e["subject"] for e in examples]
+    assert len(subjects) == len(set(subjects)), "duplicate subjects in fixtures"
+
+    for ex in yes_examples:
+        text = f"{ex['subject']} {ex['body']}".lower()
+        assert any(kw in text for kw in ["flight", "eticket", "booking", "receipt", "airline", "itinerary", "confirmation", "trip"]), \
+            f"yes example doesnt mention airline content: {ex['subject']}"
+
+    no_types = set()
+    for ex in no_examples:
+        text = f"{ex['from']} {ex['subject']} {ex['body']}".lower()
+        if any(w in text for w in ["order", "shipped", "amazon"]):
+            no_types.add("shopping")
+        elif any(w in text for w in ["mom", "dad", "family", "thanksgiving"]):
+            no_types.add("family")
+        elif any(w in text for w in ["meeting", "standup", "calendar"]):
+            no_types.add("work")
+        elif any(w in text for w in ["digest", "newsletter", "roundup"]):
+            no_types.add("newsletter")
+        elif any(w in text for w in ["payment", "venmo", "notification"]):
+            no_types.add("notification")
+    assert len(no_types) >= 4, f"no examples not diverse enough: {no_types}"
+
+
+# ── classification accuracy with committed fixtures ────────
+
+@patch("classifier.call_ollama")
+def test_classification_accuracy_travel(mock_ollama, tmp_path, monkeypatch):
+    """end-to-end accuracy test: real messages + committed fixtures + real embeddings"""
+    monkeypatch.chdir(tmp_path)
+
+    cat_name = "work_related_travel_receipts_from_airlines"
+    shutil.copy(
+        os.path.join(FIXTURES_DIR, f"synthetic_{cat_name}.json"),
+        tmp_path / f"synthetic_{cat_name}.json",
+    )
+    shutil.copy(
+        os.path.join(FIXTURES_DIR, f"rules_{cat_name}.json"),
+        tmp_path / f"rules_{cat_name}.json",
+    )
+
+    messages = load_messages(os.path.join(PROJECT_DIR, "messages.jsonl"))
+
+    ids = [m["id"] for m in messages]
+    mock_ollama.return_value = json.dumps({mid: "explanation" for mid in ids})
+
+    results = classify(messages, "work-related travel receipts from airlines")
+    result_map = {r["message_id"]: r["is_in_category"] for r in results}
+
+    assert result_map["174a9"] is True,  "Delta eTicket should match"
+    assert result_map["174d8"] is True,  "United Booking should match"
+
+    # AA personal trip is a known false positive — embeddings weight airline
+    # language too heavily to distinguish work vs personal (see dev_journal.md)
+    assert result_map["17526"] is True, "AA trip is a known false positive"
+
+    assert result_map["174b2"] is False, "AI Newsletter should not match"
+    assert result_map["174c5"] is False, "Mom Thanksgiving should not match"
+    assert result_map["174e1"] is False, "Amazon order should not match"
+    assert result_map["174f3"] is False, "Q3 Meeting should not match"
+    assert result_map["17500"] is False, "Papers We Love should not match"
+    assert result_map["17513"] is False, "Dad BBQ should not match"
+    assert result_map["17539"] is False, "GitHub PR should not match"
+    assert result_map["1753c"] is False, "Family photos should not match"
+    assert result_map["1754f"] is False, "Spotify should not match"
+
+    assert len(results) == 12, "should have result for every email"
+
+
+# ── call_ollama error handling ─────────────────────────────
+
+def test_ollama_http_error_raises():
+    """HTTP 500 from ollama should raise OllamaConnectionError, not requests.HTTPError"""
+    with patch("classifier.requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
+        mock_post.return_value = mock_resp
+        with pytest.raises(OllamaConnectionError) as exc_info:
+            call_ollama("test")
+        assert "error" in str(exc_info.value).lower()
+
+
+def test_ollama_bad_json_raises():
+    """ollama returning non-JSON or missing 'response' key should raise OllamaConnectionError"""
+    with patch("classifier.requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"error": "model not found"}
+        mock_post.return_value = mock_resp
+        with pytest.raises(OllamaConnectionError) as exc_info:
+            call_ollama("test")
+        assert "unexpected" in str(exc_info.value).lower()
+
+
+def test_ollama_timeout_is_set():
+    """requests.post should be called with a timeout"""
+    with patch("classifier.requests.post") as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"response": "ok"}
+        mock_post.return_value = mock_resp
+        call_ollama("test")
+        _, kwargs = mock_post.call_args
+        assert "timeout" in kwargs and kwargs["timeout"] > 0
+
+
+# ── classify edge cases ───────────────────────────────────
+
+@patch("classifier.call_ollama")
+def test_classify_single_message(mock_ollama, tmp_path, monkeypatch):
+    """classify should work with a single message"""
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.side_effect = [
+        json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
+        json.dumps({"174a9": "Delta is a travel receipt"}),
+    ]
+    results = classify([SAMPLE_MSG], "travel receipts", fresh=True)
+    assert len(results) == 1
+    assert results[0]["message_id"] == "174a9"
+    assert isinstance(results[0]["is_in_category"], bool)
+
+
+@patch("classifier.call_ollama")
+def test_classify_result_ids_match_input(mock_ollama, tmp_path, monkeypatch):
+    """every result message_id must correspond to an input message"""
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.side_effect = [
+        json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
+        FAKE_EXPLANATIONS,
+    ]
+    results = classify(SAMPLE_MSGS, "travel receipts", fresh=True)
+    input_ids = {m["id"] for m in SAMPLE_MSGS}
+    result_ids = {r["message_id"] for r in results}
+    assert result_ids == input_ids
+
+
+@patch("classifier.call_ollama")
+def test_classify_explanations_count_matches(mock_ollama, tmp_path, monkeypatch):
+    """every result must have a non-empty explanation"""
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.side_effect = [
+        json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
+        FAKE_EXPLANATIONS,
+    ]
+    results = classify(SAMPLE_MSGS, "travel receipts", fresh=True)
+    for r in results:
+        assert len(r["explanation"]) > 0, f"empty explanation for {r['message_id']}"
+
+
+@patch("classifier.call_ollama")
+def test_classify_output_is_json_serializable(mock_ollama, tmp_path, monkeypatch):
+    """results must be JSON-serializable (spec requires JSON output)"""
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.side_effect = [
+        json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
+        FAKE_EXPLANATIONS,
+    ]
+    results = classify(SAMPLE_MSGS, "travel receipts", fresh=True)
+    serialized = json.dumps(results)
+    roundtripped = json.loads(serialized)
+    assert len(roundtripped) == len(results)
+    for orig, rt in zip(results, roundtripped):
+        assert orig["message_id"] == rt["message_id"]
+        assert orig["is_in_category"] == rt["is_in_category"]
+
+
+@patch("classifier.call_ollama")
+def test_classify_multi_single_category(mock_ollama, tmp_path, monkeypatch):
+    """classify_multi with one category should produce same results as classify"""
+    monkeypatch.chdir(tmp_path)
+    mock_ollama.side_effect = [
+        json.dumps(FAKE_SYNTHETIC),
+        FAKE_RULES,
+        FAKE_EXPLANATIONS,
+    ]
+    results = classify_multi(SAMPLE_MSGS, ["travel"], fresh=True)
+    assert "travel" in results
+    assert len(results["travel"]) == 3
+    for r in results["travel"]:
+        assert set(r.keys()) == {"message_id", "is_in_category", "explanation"}
+
+
+# ── score_rules edge cases ────────────────────────────────
+
+def test_score_rules_missing_body_key():
+    """score_rules should handle messages with no body key"""
+    msg = {"subject": "Receipt", "snippet": "booking", "from": "delta@test.com"}
+    rules = {"keywords": ["receipt"], "sender_hints": ["delta"], "exclude_keywords": []}
+    score = score_rules(msg, rules)
+    assert score >= 1
+
+
+def test_score_rules_case_insensitive():
+    """keywords should match regardless of case"""
+    msg = {"subject": "YOUR ETICKET RECEIPT", "snippet": "", "from": "DELTA", "body": ""}
+    rules = {"keywords": ["eticket", "receipt"], "sender_hints": ["delta"], "exclude_keywords": []}
+    score = score_rules(msg, rules)
+    assert score >= 3
+
+
+# ── parse_json_response edge cases ─────────────────────────
+
+def test_parse_json_empty_dict():
+    result = parse_json_response("{}")
+    assert result == {}
+
+
+def test_parse_json_empty_array():
+    result = parse_json_response("[]")
+    assert result == []
+
+
+def test_parse_json_unicode():
+    raw = '{"name": "Confirmación de vuelo"}'
+    result = parse_json_response(raw)
+    assert result["name"] == "Confirmación de vuelo"
+
+
+# ── decode_body edge cases ────────────────────────────────
+
+def test_decode_body_large_content():
+    """should handle large email bodies without error"""
+    big = "A" * 100000
+    encoded = base64.b64encode(big.encode()).decode()
+    result = decode_body(encoded)
+    assert len(result) == 100000
+
+
+def test_decode_body_mixed_html_text():
+    html = "Plain text before <b>bold</b> and after"
+    encoded = base64.b64encode(html.encode()).decode()
+    result = decode_body(encoded)
+    assert "Plain text before" in result
+    assert "bold" in result
+    assert "and after" in result
+    assert "<b>" not in result

@@ -1,0 +1,5 @@
+{
+  "keywords": ["eticket", "flight", "booking confirmation", "itinerary", "airline", "receipt"],
+  "sender_hints": ["delta", "united", "southwest", "jetblue", "american airlines", "aa.com", "alaskaair"],
+  "exclude_keywords": ["newsletter", "hotel only", "personal vacation", "personal visa", "personal credit card", "uber", "lyft"]
+}

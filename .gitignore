@@ -7,8 +7,8 @@ output/
 *.egg-info/
 dist/
 build/
-synthetic_*.json
-pipeline_*.json
-feedback_*.json
-rules_*.json
+/synthetic_*.json
+/pipeline_*.json
+/feedback_*.json
+/rules_*.json
 .pytest_cache/

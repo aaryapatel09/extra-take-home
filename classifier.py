@@ -16,14 +16,21 @@ import base64
 import sys
 import os
 import re
+import logging
 import requests
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 
+logger = logging.getLogger(__name__)
+
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 MARGIN_THRESHOLD = 0.05
+
+
+class OllamaConnectionError(Exception):
+    pass
 
 
 def load_messages(path):
@@ -67,13 +74,20 @@ def call_ollama(prompt, temperature=0.7):
             "prompt": prompt,
             "stream": False,
             "options": {"temperature": temperature, "num_predict": 8000},
-        })
+        }, timeout=120)
         resp.raise_for_status()
         return resp.json()["response"]
     except requests.ConnectionError:
-        print(f"\n  ERROR: cant connect to ollama at {OLLAMA_URL}")
-        print(f"  make sure ollama is running (ollama serve) and {OLLAMA_MODEL} is pulled")
-        sys.exit(1)
+        raise OllamaConnectionError(
+            f"cant connect to ollama at {OLLAMA_URL}. "
+            f"make sure ollama is running (ollama serve) and {OLLAMA_MODEL} is pulled"
+        )
+    except requests.HTTPError as e:
+        raise OllamaConnectionError(f"ollama returned an error: {e}")
+    except (KeyError, requests.JSONDecodeError):
+        raise OllamaConnectionError(
+            f"unexpected response from ollama — is {OLLAMA_MODEL} pulled?"
+        )
 
 
 def parse_json_response(raw_text):
@@ -103,11 +117,10 @@ def parse_json_response(raw_text):
         except json.JSONDecodeError:
             continue
     if recovered:
-        print(f"  recovered {len(recovered)} objects from partial json")
+        logger.info("recovered %d objects from partial json", len(recovered))
         return recovered
 
-    print(f"  FAILED to parse json. raw:")
-    print(raw_text[:300])
+    logger.warning("failed to parse json: %s", raw_text[:300])
     return None
 
 
@@ -135,14 +148,14 @@ def generate_synthetic_examples(category_description, fresh=False):
     cache_path = f"synthetic_{safe_name}.json"
 
     if not fresh and os.path.exists(cache_path):
-        print(f"  loading cached examples from {cache_path}")
+        logger.info("loading cached examples from %s", cache_path)
         with open(cache_path, "r") as f:
             examples = json.load(f)
         yes_texts, no_texts, edge_texts = _parse_examples(examples)
         if yes_texts and no_texts:
-            print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples (cached)")
+            logger.info("got %d yes, %d no, %d edge examples (cached)", len(yes_texts), len(no_texts), len(edge_texts))
             return yes_texts, no_texts, edge_texts
-        print("  cache was bad, regenerating...")
+        logger.info("cache was bad, regenerating...")
 
     prompt = f"""Generate synthetic emails for this category: "{category_description}"
 
@@ -154,7 +167,7 @@ JSON array, 12 objects. Keys: label, from, subject, body, reason. Keep body unde
 IMPORTANT: every single example must have a unique sender and subject. no repeats.
 Output ONLY the JSON array:"""
 
-    print("  generating synthetic examples...")
+    logger.info("generating synthetic examples...")
     raw = call_ollama(prompt, temperature=0)
     examples = parse_json_response(raw)
 
@@ -162,7 +175,7 @@ Output ONLY the JSON array:"""
         return [], [], []
 
     yes_texts, no_texts, edge_texts = _parse_examples(examples)
-    print(f"  got {len(yes_texts)} yes, {len(no_texts)} no, {len(edge_texts)} edge examples")
+    logger.info("got %d yes, %d no, %d edge examples", len(yes_texts), len(no_texts), len(edge_texts))
 
     with open(cache_path, "w") as f:
         json.dump(examples, f, indent=2)
@@ -179,7 +192,7 @@ def generate_heuristic_rules(category_description, fresh=False):
         with open(cache_path, "r") as f:
             rules = json.load(f)
         if rules.get("keywords"):
-            print(f"  loaded {len(rules['keywords'])} keyword rules (cached)")
+            logger.info("loaded %d keyword rules (cached)", len(rules["keywords"]))
             return rules
 
     prompt = f"""Category: "{category_description}"
@@ -192,7 +205,7 @@ Output a JSON object with these keys:
 
 Be specific to this category. Output ONLY the JSON object:"""
 
-    print("  generating heuristic rules...")
+    logger.info("generating heuristic rules...")
     raw = call_ollama(prompt, temperature=0)
     rules = parse_json_response(raw)
 
@@ -242,11 +255,17 @@ def cosine_sim(a, b):
 
 
 def generate_explanations_batch(messages, classifications, category_description):
-    """generate explanations for all emails in a single LLM call"""
+    """generate explanations for all emails in a single LLM call, matched by message ID"""
+    if not messages:
+        return []
+
     lines = []
-    for i, (msg, is_match) in enumerate(zip(messages, classifications)):
+    msg_ids = []
+    for msg, is_match in zip(messages, classifications):
         tag = "YES" if is_match else "NO"
-        lines.append(f"{i+1}. [{tag}] From: {msg.get('from', '')} Subject: \"{msg.get('subject', '')}\"")
+        msg_id = msg.get("id", "")
+        msg_ids.append(msg_id)
+        lines.append(f'{msg_id} [{tag}] From: {msg.get("from", "")} Subject: "{msg.get("subject", "")}"')
 
     prompt = f"""Category: "{category_description}"
 
@@ -254,11 +273,24 @@ For each email below, write ONE short sentence (under 15 words) explaining why i
 
 {chr(10).join(lines)}
 
-Output a JSON array of {len(messages)} explanation strings, in order. Output ONLY the JSON array:"""
+Output a JSON object mapping each email ID to its explanation string. Output ONLY the JSON object:"""
 
     try:
         raw = call_ollama(prompt)
         parsed = parse_json_response(raw)
+
+        if isinstance(parsed, dict):
+            explanations = []
+            for i, msg_id in enumerate(msg_ids):
+                exp = str(parsed.get(msg_id, parsed.get(str(msg_id), ""))).strip().strip('"').strip("'")
+                if not exp:
+                    is_match = classifications[i]
+                    exp = f"{'matches' if is_match else 'does not match'} \"{category_description}\""
+                if len(exp) > 150:
+                    exp = exp[:150] + "..."
+                explanations.append(exp)
+            return explanations
+
         if isinstance(parsed, list) and len(parsed) >= len(messages):
             explanations = []
             for item in parsed[:len(messages)]:
@@ -296,20 +328,19 @@ def save_feedback(category_description, feedback):
 
 
 def classify(messages, category_description, feedback=None, fresh=False):
-    print(f"\n=== classifier ===")
-    print(f"category: \"{category_description}\"\n")
+    logger.info("classifier: category=%s", category_description)
 
     yes_texts, no_texts, edge_texts = generate_synthetic_examples(category_description, fresh=fresh)
     if not yes_texts or not no_texts:
-        print("ERROR: couldnt generate examples")
+        logger.error("couldnt generate examples")
         return []
 
     rules = generate_heuristic_rules(category_description, fresh=fresh)
 
-    print("  loading embedding model...")
+    logger.info("loading embedding model...")
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
-    print("  embedding synthetic examples...")
+    logger.info("embedding synthetic examples...")
     yes_emb = model.encode(yes_texts)
     no_all = no_texts + edge_texts
     no_emb = model.encode(no_all)
@@ -318,10 +349,10 @@ def classify(messages, category_description, feedback=None, fresh=False):
     no_centroid = np.mean(no_emb, axis=0)
 
     email_texts = [email_to_text(msg) for msg in messages]
-    print(f"  batch embedding {len(messages)} emails...")
+    logger.info("batch embedding %d emails...", len(messages))
     all_emb = model.encode(email_texts)
 
-    print(f"  classifying...\n")
+    logger.info("classifying...")
     classifications = []
     rule_tiebreaks = 0
 
@@ -338,16 +369,16 @@ def classify(messages, category_description, feedback=None, fresh=False):
             else:
                 is_match = False
         else:
-            is_match = yes_sim > no_sim
+            is_match = bool(yes_sim > no_sim)
 
         classifications.append(is_match)
         status = "YES" if is_match else " no"
-        print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+        logger.info("[%s] %s: %s", status, msg["id"], msg["subject"][:50])
 
     if rule_tiebreaks:
-        print(f"\n  rules broke {rule_tiebreaks} tiebreak(s)")
+        logger.info("rules broke %d tiebreak(s)", rule_tiebreaks)
 
-    print(f"\n  generating explanations (batch)...")
+    logger.info("generating explanations (batch)...")
     explanations = generate_explanations_batch(messages, classifications, category_description)
 
     results = []
@@ -358,7 +389,7 @@ def classify(messages, category_description, feedback=None, fresh=False):
             "explanation": explanation,
         }
         results.append(result)
-        print(f"        {msg['id']}: {explanation}")
+        logger.info("  %s: %s", msg["id"], explanation)
 
     if feedback:
         applied = 0
@@ -370,7 +401,7 @@ def classify(messages, category_description, feedback=None, fresh=False):
                     result["explanation"] += " (corrected)"
                     applied += 1
         if applied:
-            print(f"\n  applied {applied} corrections")
+            logger.info("applied %d corrections", applied)
 
     return results
 
@@ -380,33 +411,32 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
     if feedbacks is None:
         feedbacks = {}
 
-    print(f"\n=== multi-category classifier ===")
-    print(f"categories: {categories}\n")
+    logger.info("multi-category classifier: %s", categories)
 
     category_examples = {}
     category_rules = {}
     for cat in categories:
         yes_texts, no_texts, edge_texts = generate_synthetic_examples(cat, fresh=fresh)
         if not yes_texts or not no_texts:
-            print(f"  WARNING: couldnt generate examples for \"{cat}\", skipping")
+            logger.warning("couldnt generate examples for '%s', skipping", cat)
             continue
         category_examples[cat] = (yes_texts, no_texts, edge_texts)
         category_rules[cat] = generate_heuristic_rules(cat, fresh=fresh)
 
     if not category_examples:
-        print("ERROR: no valid categories")
+        logger.error("no valid categories")
         return {}
 
-    print("  loading embedding model...")
+    logger.info("loading embedding model...")
     model = SentenceTransformer("all-MiniLM-L6-v2")
 
     email_texts = [email_to_text(msg) for msg in messages]
-    print(f"  batch embedding {len(messages)} emails...")
+    logger.info("batch embedding %d emails...", len(messages))
     all_emb = model.encode(email_texts)
 
     all_results = {}
     for cat, (yes_texts, no_texts, edge_texts) in category_examples.items():
-        print(f"\n  --- {cat} ---")
+        logger.info("--- %s ---", cat)
         rules = category_rules[cat]
 
         yes_emb = model.encode(yes_texts)
@@ -431,16 +461,16 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
                 else:
                     is_match = False
             else:
-                is_match = yes_sim > no_sim
+                is_match = bool(yes_sim > no_sim)
 
             classifications.append(is_match)
             status = "YES" if is_match else " no"
-            print(f"  [{status}] {msg['id']}: {msg['subject'][:50]}")
+            logger.info("[%s] %s: %s", status, msg["id"], msg["subject"][:50])
 
         if rule_tiebreaks:
-            print(f"  rules broke {rule_tiebreaks} tiebreak(s)")
+            logger.info("rules broke %d tiebreak(s)", rule_tiebreaks)
 
-        print(f"  generating explanations (batch)...")
+        logger.info("generating explanations (batch)...")
         explanations = generate_explanations_batch(messages, classifications, cat)
 
         results = []
@@ -451,7 +481,7 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
                 "explanation": explanation,
             }
             results.append(result)
-            print(f"        {msg['id']}: {explanation}")
+            logger.info("  %s: %s", msg["id"], explanation)
 
         feedback = feedbacks.get(cat, {})
         if feedback:
@@ -464,7 +494,7 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
                         result["explanation"] += " (corrected)"
                         applied += 1
             if applied:
-                print(f"  applied {applied} corrections for \"{cat}\"")
+                logger.info("applied %d corrections for '%s'", applied, cat)
 
         all_results[cat] = results
 
@@ -474,21 +504,24 @@ def classify_multi(messages, categories, feedbacks=None, fresh=False):
 def run(messages_path, category_description, feedback=None):
     messages = load_messages(messages_path)
     results = classify(messages, category_description, feedback)
-
-    print(f"\n--- results ---")
     print(json.dumps(results, indent=2))
     return results
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+
     messages_file = sys.argv[1] if len(sys.argv) > 1 else "messages.jsonl"
-    if len(sys.argv) > 3:
-        messages = load_messages(messages_file)
-        all_results = classify_multi(messages, sys.argv[2:])
-        print(f"\n--- results ---")
-        print(json.dumps(all_results, indent=2))
-    elif len(sys.argv) == 3:
-        run(messages_file, sys.argv[2])
-    else:
-        category = input("enter category description: ")
-        run(messages_file, category)
+    try:
+        if len(sys.argv) > 3:
+            messages = load_messages(messages_file)
+            all_results = classify_multi(messages, sys.argv[2:])
+            print(json.dumps(all_results, indent=2))
+        elif len(sys.argv) == 3:
+            run(messages_file, sys.argv[2])
+        else:
+            category = input("enter category description: ")
+            run(messages_file, category)
+    except OllamaConnectionError as e:
+        print(f"\n  ERROR: {e}", file=sys.stderr)
+        sys.exit(1)

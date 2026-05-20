@@ -3,6 +3,7 @@
 
 import sys
 import json
+import logging
 from classifier import (
     load_messages,
     classify,
@@ -10,6 +11,7 @@ from classifier import (
     load_feedback,
     save_feedback,
     get_feedback_path,
+    OllamaConnectionError,
 )
 
 BOLD = "\033[1m"
@@ -41,7 +43,7 @@ def show_results(results, messages, category=None):
         else:
             tag = f"{DIM}  no {RESET}"
 
-        explanation = r["explanation"][:60]
+        explanation = r["explanation"]
         print(f"  {i:2d}. {tag} {subject:<44s} {DIM}{sender}{RESET}")
         print(f"           {DIM}{explanation}{RESET}")
 
@@ -83,6 +85,8 @@ def correction_loop(results, category_description):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")
+
     messages_file = sys.argv[1] if len(sys.argv) > 1 else "messages.jsonl"
     messages = load_messages(messages_file)
 
@@ -116,34 +120,37 @@ def main():
         else:
             categories = [c.strip() for c in raw.split(",") if c.strip()]
 
-        if len(categories) == 1:
-            category = categories[0]
-            feedback = load_feedback(category)
-            if feedback:
-                print(f"  {DIM}{len(feedback)} corrections loaded{RESET}")
+        try:
+            if len(categories) == 1:
+                category = categories[0]
+                feedback = load_feedback(category)
+                if feedback:
+                    print(f"  {DIM}{len(feedback)} corrections loaded{RESET}")
 
-            results = classify(messages, category, feedback if feedback else None, fresh=fresh)
-            show_results(results, messages)
-            last_categories = categories
-            correction_loop(results, category)
-        else:
-            feedbacks = {}
-            for cat in categories:
-                fb = load_feedback(cat)
-                if fb:
-                    feedbacks[cat] = fb
-                    print(f"  {DIM}{len(fb)} corrections for \"{cat}\"{RESET}")
+                results = classify(messages, category, feedback if feedback else None, fresh=fresh)
+                show_results(results, messages)
+                last_categories = categories
+                correction_loop(results, category)
+            else:
+                feedbacks = {}
+                for cat in categories:
+                    fb = load_feedback(cat)
+                    if fb:
+                        feedbacks[cat] = fb
+                        print(f"  {DIM}{len(fb)} corrections for \"{cat}\"{RESET}")
 
-            all_results = classify_multi(messages, categories, feedbacks, fresh=fresh)
+                all_results = classify_multi(messages, categories, feedbacks, fresh=fresh)
 
-            for cat, results in all_results.items():
-                show_results(results, messages, category=cat)
+                for cat, results in all_results.items():
+                    show_results(results, messages, category=cat)
 
-            last_categories = categories
+                last_categories = categories
 
-            for cat, results in all_results.items():
-                print(f"  {BOLD}{cat}{RESET} corrections:")
-                correction_loop(results, cat)
+                for cat, results in all_results.items():
+                    print(f"  {BOLD}{cat}{RESET} corrections:")
+                    correction_loop(results, cat)
+        except OllamaConnectionError as e:
+            print(f"\n  {RED}ERROR: {e}{RESET}\n")
 
     print(f"\n  {DIM}done{RESET}\n")
 
