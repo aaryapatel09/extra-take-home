@@ -2,7 +2,7 @@
 
 A local prototype of multi-profile applicant matching. It creates a ranked **human review** report with exact source quotes, unresolved requirements, and a sampled exploration queue. It does not make hiring decisions. The Gmail classifier remains available through its original commands.
 
-## Run the demo
+## Interactive CLI
 
 Use Python 3.11 or later. CPU is the default and the tested backend.
 
@@ -11,6 +11,54 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
+# Starts with fictional sample applicants:
+python applicant_cli.py
+# Equivalent:
+python -m applicant_eval
+
+# Start with your own records or a folder of text resumes:
+python applicant_cli.py ./resumes
+```
+
+On macOS, after setup, double-click `start_applicants.command` to open the same CLI.
+
+Type `demo` to try the included role immediately. To draft profiles from your own job description, run local Ollama and pull `llama3.2:3b` first (`ollama serve`, then `ollama pull llama3.2:3b` in another terminal). Type a job description at the prompt:
+
+```text
+job> Backend developer who can build APIs, write SQL queries, and write automated tests.
+review> 2
+review> mark 2 shortlist Strong project evidence; discuss testing in interview.
+review> queue
+review> export output/backend-review
+review> quit
+```
+
+The CLI displays the draft capabilities, the exact job wording behind each, and nine example profiles across three paths: direct experience, independent projects, and transferable experience. It evaluates the loaded applicants and shows all results. Inspect the draft requirements before relying on the results. `profiles` shows them again; `role PATH` loads an edited role JSON. The saved-role format supports up to 40 paths.
+
+| Command | Action |
+|---|---|
+| `demo` | Load and evaluate the fictional sample; no Ollama required |
+| Plain job description / `job DESCRIPTION` | Generate or reuse cached profiles and evaluate |
+| `paste` | Enter a multiline job; finish with a single `.` |
+| `load PATH` | Load JSONL, a JSON array, a text resume, or a folder of text resumes |
+| `role PATH` / `profiles` | Load a saved rubric / inspect its profiles |
+| `run` / `fresh` | Re-evaluate / regenerate profiles for the last typed job |
+| `list` / a row number | Show the table / inspect source evidence |
+| `mark N shortlist\|hold\|pass [NOTE]` | Save your own review decision and optional note |
+| `clear N` | Remove your review mark |
+| `queue` / `budget N` | Show the review queue / change its size |
+| `export [DIRECTORY]` | Save HTML, JSON, and the role, including your review notes |
+| `help` / `quit` | List commands / exit |
+
+Quote paths containing spaces. Human marks do not change model scores. Notes persist under `output/applicant-session`, scoped to the exact role and applicant text; changing either starts a distinct review. A damaged notes file is preserved and reported rather than silently overwritten. Use `--session-dir PATH` to separate projects. Review files contain applicant text and your notes.
+
+First use downloads the pinned MiniLM embedding and DeBERTa evidence model weights from Hugging Face. Subsequent runs can use `--offline`; this means cached evaluation models, and still allows the local Ollama connection for a new job. Applicant records are evaluated locally and are not sent to the generator or an inference API. Models are loaded once per CLI session. Profile generation releases its model memory before evaluation. `--plain` disables colors and animations; `--model` and `--ollama-url` select the generator.
+
+The local model endpoints should be left at localhost for local operation. Choosing a remote `--ollama-url` sends job descriptions to that endpoint, but never applicant records.
+
+## Batch demo
+
+```sh
 python -m applicant_eval evaluate \
   --role examples/applicants/backend_role.json \
   --applicants examples/applicants/sample_applicants.jsonl \
@@ -21,13 +69,11 @@ python -m applicant_eval evaluate \
 
 Open `output/applicants.html` in a browser. All applicants remain visible; the review queue includes ranked candidates and a reproducible 20% sample of the remaining pool. This sample is for discovering blind spots, and can reduce immediate recall at a fixed budget. The library's `review_queue` accepts an exploration fraction and seed. A budget of one uses the first ranked record.
 
-First use downloads the pinned MiniLM embedding and DeBERTa NLI model weights from Hugging Face. Subsequent runs can use `--offline`. Inference runs locally; applicant records are not sent to Hugging Face or an inference API. Models and in-process embedding caches consume memory. Reports contain applicant-supplied text; choose their location accordingly. CPU behavior is tested; GPU device flags are provided but not verified here.
-
-`requirements-applicants.lock` records the exact dependency versions used for the reported tests. To reproduce that environment, use it in place of `requirements.txt` (tested on Python 3.11, macOS ARM64). The model revisions are pinned in `applicant_eval/models.py` and included in every report.
+`requirements-applicants.lock` records the exact dependency versions used for the reported tests. To reproduce that environment, use it in place of `requirements.txt` (tested on Python 3.11, macOS ARM64 and Linux CI). Model revisions are pinned in `applicant_eval/models.py` and included in every report. CPU inference is tested; GPU device flags are provided but unverified.
 
 ## Inputs
 
-Each applicant is one JSON object per line:
+For JSONL input, each applicant is one JSON object per line:
 
 ```json
 {"id":"candidate-001","evidence":[{"id":"project-1","text":"I built a REST API for volunteer scheduling."},{"id":"project-2","text":"I wrote SQL queries and automated tests for the application."}]}
@@ -37,7 +83,7 @@ Supply work/project statements in `evidence`, preferably one accomplishment per 
 
 Only `id` and `evidence` are consumed. Names, contact details, school metadata, demographic attributes and benchmark labels in other fields are ignored. This does **not** remove such information if it appears inside evidence text, and does not establish fairness of embeddings or the downstream review process. Applicant IDs are used for deterministic tie-breaking and exploration sampling, not semantic scoring.
 
-An empty evidence list is valid and produces `needs_review` with unknown criteria. Missing information never becomes an automatic rejection. Duplicate IDs, invalid role references, empty profile sets, malformed JSON, oversized records and non-finite settings fail explicitly. This version takes JSONL/text evidence; it does not parse PDF/DOCX résumés.
+An empty evidence list is valid and produces `needs_review` with unknown criteria. Missing information never becomes an automatic rejection. Duplicate IDs, invalid role references, empty profile sets, malformed JSON, oversized records and non-finite settings fail explicitly. The interactive CLI also accepts JSON arrays and one `.txt`/`.md` file per applicant, individually or in a directory. Directory input ignores hidden files and unsupported extensions. This version does not parse PDF/DOCX résumés.
 
 The role JSON contains:
 
@@ -54,11 +100,13 @@ If local Ollama is installed and a model has been pulled:
 ```sh
 python -m applicant_eval generate-role \
   --description job-description.txt \
-  --model llama3.2 \
+  --model llama3.2:3b \
   --output output/draft-role.json
 ```
 
-This makes one structured local generation request and validates the result. Inspect the draft requirements and profiles before evaluating applicants: generated examples can invent requirements or reproduce assumptions. The generator receives only the job description, never applicant evidence. The generator's HTTP, parsing and validation paths have automated tests; a live Ollama generation was **not** tested in this environment because Ollama was unavailable and disk space was insufficient to install another model. The checked-in role works without Ollama.
+Generation uses two schema-constrained local steps: extract source-linked capabilities, then draft complete examples for every essential capability in three distinct experience paths. Each step allows one repair attempt, so a job takes two to four requests regardless of applicant count. Drafts are cached by job description, model, and generator version. Generated profiles contain positive examples; near-miss examples can be supplied in a reviewed role file. They are not automatically invented as rejection rules.
+
+Validation checks structure, unique IDs, source-quote presence in the job text, complete example fields, and unrequested tenure. These checks do not establish that a draft captured every requirement or interpreted it correctly. Inspect requirements and examples before relying on a generated rubric. Live generation and the interactive flow were tested with local `llama3.2:3b`; see `benchmarks/RESULTS.md`. The checked-in demo role works without Ollama.
 
 ## Scoring and evidence checks
 
@@ -76,8 +124,8 @@ The best-supported path can differ from the closest semantic profile. Support an
 
 ```sh
 pip install -r requirements-applicants-dev.txt
-ruff check applicant_eval tests/applicants
-ruff format --check applicant_eval tests/applicants
+ruff check applicant_eval applicant_cli.py tests/applicants
+ruff format --check applicant_eval applicant_cli.py tests/applicants
 
 # Fast deterministic tests, no model downloads:
 pytest tests/applicants -m 'not model' -q

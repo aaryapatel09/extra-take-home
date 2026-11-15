@@ -3,53 +3,22 @@ import json
 import sys
 from pathlib import Path
 
+from .io import read_json, read_jsonl, save
 from .schema import Applicant, InputError, Role, Settings
 
 
-def read_json(path):
-    with Path(path).open(encoding="utf-8") as stream:
-        return json.load(stream)
-
-
-def read_jsonl(path):
-    records = []
-    with Path(path).open(encoding="utf-8") as stream:
-        for line, raw in enumerate(stream, 1):
-            if raw.strip():
-                try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError as exc:
-                    raise InputError(f"invalid JSON on line {line}: {exc.msg}") from exc
-    return records
-
-
-def save(path, content):
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic writes prevent leaving an incomplete report if the process is interrupted.
-    import os
-    import tempfile
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=target.parent, delete=False
-    ) as f:
-        temp = Path(f.name)
-        try:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        except BaseException:
-            temp.unlink(missing_ok=True)
-            raise
-    temp.replace(target)
-
-
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] == "interactive":
+        from .interactive import main as interactive_main
+
+        return interactive_main(argv[1:] if argv else [])
     parser = argparse.ArgumentParser(description="Local applicant evidence review")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("interactive", help="Open the interactive applicant reviewer")
     generate = commands.add_parser("generate-role", help="Draft profiles using local Ollama")
     generate.add_argument("--description", required=True, help="UTF-8 job-description file")
-    generate.add_argument("--model", default="llama3.2")
+    generate.add_argument("--model", default="llama3.2:3b")
     generate.add_argument("--ollama-url", default="http://localhost:11434")
     generate.add_argument("--output", required=True)
     for name in ("evaluate", "benchmark"):

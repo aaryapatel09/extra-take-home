@@ -2,7 +2,7 @@ name: Applicant evaluation tests
 
 on:
   push:
-    branches: [main, 'feat/applicant-*']
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -21,8 +21,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-applicants.lock
       - run: python -m pip install -r requirements-applicants.lock
-      - run: ruff check applicant_eval tests/applicants
-      - run: ruff format --check applicant_eval tests/applicants
+      - run: ruff check applicant_eval applicant_cli.py tests/applicants
+      - run: ruff format --check applicant_eval applicant_cli.py tests/applicants
       - name: Download pinned local models
         run: python -c 'from applicant_eval.models import LocalModels; LocalModels()'
       - name: Applicant tests with actual models

@@ -2,11 +2,18 @@
 
 ## applicant evaluation prototype
 
-This repository also includes a local multi-profile applicant evaluator: separate
-profile centroids, source-linked capability checks, a human review queue, HTML/JSON
-reports, and a synthetic comparison benchmark. See [APPLICANTS.md](APPLICANTS.md)
-for setup, usage, test commands and limitations, and [benchmark results](benchmarks/RESULTS.md)
-for measured behavior. Run it with `python -m applicant_eval`.
+Type a job description, generate several qualifying profiles, and review applicants
+in the terminal. Inspect a row for source evidence, save shortlist/hold/pass marks,
+and export HTML/JSON reports. Everything runs locally.
+
+```sh
+python applicant_cli.py       # type demo to try the fictional sample
+python applicant_cli.py ./resumes
+```
+
+See [APPLICANTS.md](APPLICANTS.md) for setup and commands, and
+[benchmark results](benchmarks/RESULTS.md) for tests and model limitations.
+`python -m applicant_eval` opens the same interactive CLI; batch commands remain available.
 
 ## gmail classifier
 

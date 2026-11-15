@@ -354,8 +354,18 @@
     }
   },
   "test_summary": {
-    "applicant_tests_passed": 80,
+    "applicant_tests_passed": 138,
     "gmail_tests_passed": 101,
-    "statement_coverage_percent": 95.83333333333333
+    "statement_coverage_percent": 93.77777777777777,
+    "live_generation": {
+      "tested": true,
+      "model": "llama3.2:3b",
+      "job_descriptions_tested": [
+        "backend developer",
+        "frontend developer"
+      ],
+      "scope": "generation smoke tests, not ranking accuracy validation",
+      "requests_per_job": 2
+    }
   }
 }

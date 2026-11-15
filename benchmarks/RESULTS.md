@@ -4,9 +4,9 @@ Measured on 2026-11-15 with Python 3.11.16 on macOS ARM64, CPU inference.
 
 ## Scope
 
-- **80 applicant-evaluator tests passed**, including four tests using actual local models.
+- **138 applicant-evaluator tests passed**, including four tests using actual local models.
 - **101 existing Gmail classifier tests passed**.
-- **95.8% statement coverage** for the applicant package.
+- **93.8% statement coverage** for the applicant package.
 - **52 authored synthetic applicants**: 12 development cases and 40 challenge cases. The challenge set contains 12 records labeled qualified under the demo rubric and 28 with insufficient or conflicting evidence.
 - **120 paired invariance checks**: 40 changes to identity metadata, 40 reorderings and 40 exact-evidence duplications.
 - **12 authored paraphrase pairs**, evaluated separately.
@@ -55,6 +55,10 @@ Model revisions, settings, dataset digest, comparisons, slices and paired failur
 
 The last benchmark took approximately **4.7 seconds after model loading**, including paired checks. In-process caching reuses repeated text; this is not a production throughput claim.
 
-The optional Ollama generator's transport, JSON/schema validation and CLI were tested with controlled responses. **Live generation was not run**: Ollama was unavailable and local disk space was insufficient to install another model. The evaluator ran with real MiniLM and DeBERTa models and the checked-in profiles. PDF parsing, other languages, other job families, GPU inference and real hiring validity were not tested.
+The interactive CLI was tested in a real terminal with the actual embedding/evidence models and a local Ollama `llama3.2:3b` model. Live drafting captured the three requested capabilities for both a backend job and a frontend job, using two generation requests per job (approximately 35–41 seconds on this machine). These were generation smoke tests, not applicant-quality benchmarks for a second role.
+
+The first live drafts exposed duplicate IDs, invented tenure, incomplete skills, and negative examples based on optional requirements. Generation now separates source-linked capability extraction from example generation, validates every essential example field, and permits one bounded repair per step. Generated near misses were removed; reviewed role files can still provide them. Exact job quotes and draft examples remain inspectable. This improves structural reliability but does not guarantee semantic completeness: generated examples still sometimes describe only loosely related work for a capability.
+
+The CLI tests cover cached roles, single-session model reuse, persisted human notes, isolation when job/applicant contents change, malformed inputs, generation failures, incomplete examples, escaped display/export, and graceful EOF/interruption. The manual terminal walkthrough also checked generation, evidence inspection, marking, queue size, exports, and cache reuse. PDF parsing, other languages, GPU evaluation and real hiring validity were not tested.
 
 For real-world validation, the next evidence needed is a consented corpus independently assessed against job-relevant tasks, including audits of applicants below the review cutoff. These results support further experimentation with reviewer assistance; they do not justify automatic applicant rejection.

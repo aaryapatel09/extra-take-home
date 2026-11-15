@@ -7,6 +7,12 @@ def render_html(report):
     queue = {q["applicant_id"]: q["reason"] for q in report.get("review_queue", [])}
     cards = []
     for r in report["results"]:
+        human = r.get("human_review")
+        human_text = (
+            f"<p><b>Your review:</b> {escape(human['status'])} — {escape(human['note'])}</p>"
+            if human
+            else ""
+        )
         criteria = []
         for c in r["evidence"]:
             sources = "".join(
@@ -28,6 +34,7 @@ def render_html(report):
             f"similarity {r['profile_similarity']:.3f}</p>"
             f"<p>Best-supported path: {escape(r['best_supported_profile'])}. "
             f"Unresolved: {escape(', '.join(r['unresolved_criteria']) or 'none in this rubric')}.</p>"
+            + human_text
             + "".join(criteria)
             + "</article>"
         )
