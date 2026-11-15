@@ -1,5 +1,22 @@
 # gmail category builder
 
+## applicant evaluation prototype
+
+Type a job description, generate several qualifying profiles, and review applicants
+in the terminal. Inspect a row for source evidence, save shortlist/hold/pass marks,
+and export HTML/JSON reports. Everything runs locally.
+
+```sh
+python applicant_cli.py       # type demo to try the fictional sample
+python applicant_cli.py ./resumes
+```
+
+See [APPLICANTS.md](APPLICANTS.md) for setup and commands, and
+[benchmark results](benchmarks/RESULTS.md) for tests and model limitations.
+`python -m applicant_eval` opens the same interactive CLI; batch commands remain available.
+
+## gmail classifier
+
 classifies gmail messages into custom categories you describe in plain english. like "work travel receipts from airlines" or "family stuff" or "newsletters about AI".
 
 no paid APIs, everything runs locally — ollama for the LLM and sentence-transformers for embeddings.

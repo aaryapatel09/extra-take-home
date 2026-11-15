@@ -1,0 +1,371 @@
+{
+  "dataset": "authored synthetic challenge set",
+  "split": "test",
+  "independent_records": 40,
+  "paired_variants": 120,
+  "dataset_sha256": "f714a81b1ac2b53eefde38c40c2a4e509ef980c46704433ac07ccb3b43241068",
+  "limitations": [
+    "Labels are author judgments under the fixture rubric, not hiring outcomes.",
+    "No external or prospective validation; model scores are uncalibrated.",
+    "Metadata invariance is enforced by input exclusion, not proof of demographic fairness.",
+    "Paired variants are correlated stress tests, not additional independent examples."
+  ],
+  "models": {
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "embedding_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "evidence_model": "cross-encoder/nli-deberta-v3-small",
+    "evidence_revision": "fa2804872c3b4bd748f38c0185cc85775361e735",
+    "device": "cpu"
+  },
+  "settings": {
+    "evidence_threshold": 0.8,
+    "contradiction_threshold": 0.8,
+    "evidence_top_k": 3,
+    "min_evidence_similarity": 0.25
+  },
+  "seconds": 4.73874375000014,
+  "comparisons": {
+    "job_description": {
+      "review_budget": 12,
+      "qualified_found": 1,
+      "qualified_total": 12,
+      "precision_at_k": 0.08333333333333333,
+      "recall_at_k": 0.08333333333333333,
+      "average_precision": 0.2403295684494641,
+      "missed_qualified_ids": [
+        "t10-academic",
+        "t06-biology",
+        "t11-consultant",
+        "t09-intern",
+        "t04-self-taught",
+        "t07-volunteer",
+        "t05-physics",
+        "t03-career-change",
+        "t08-maintainer",
+        "t02-inventory",
+        "t01-payments"
+      ]
+    },
+    "single_centroid": {
+      "review_budget": 12,
+      "qualified_found": 6,
+      "qualified_total": 12,
+      "precision_at_k": 0.5,
+      "recall_at_k": 0.5,
+      "average_precision": 0.5064828281740046,
+      "missed_qualified_ids": [
+        "t04-self-taught",
+        "t07-volunteer",
+        "t03-career-change",
+        "t08-maintainer",
+        "t02-inventory",
+        "t01-payments"
+      ]
+    },
+    "contrastive_single_centroid": {
+      "review_budget": 12,
+      "qualified_found": 9,
+      "qualified_total": 12,
+      "precision_at_k": 0.75,
+      "recall_at_k": 0.75,
+      "average_precision": 0.7889651527809423,
+      "missed_qualified_ids": [
+        "t10-academic",
+        "t09-intern",
+        "t04-self-taught"
+      ]
+    },
+    "multiple_centroids": {
+      "review_budget": 12,
+      "qualified_found": 8,
+      "qualified_total": 12,
+      "precision_at_k": 0.6666666666666666,
+      "recall_at_k": 0.6666666666666666,
+      "average_precision": 0.6481127940686765,
+      "missed_qualified_ids": [
+        "t09-intern",
+        "t07-volunteer",
+        "t08-maintainer",
+        "t01-payments"
+      ]
+    },
+    "contrastive_multiple_centroids": {
+      "review_budget": 12,
+      "qualified_found": 9,
+      "qualified_total": 12,
+      "precision_at_k": 0.75,
+      "recall_at_k": 0.75,
+      "average_precision": 0.8101430976430977,
+      "missed_qualified_ids": [
+        "t03-career-change",
+        "t04-self-taught",
+        "t10-academic"
+      ]
+    },
+    "chunk_matching": {
+      "review_budget": 12,
+      "qualified_found": 2,
+      "qualified_total": 12,
+      "precision_at_k": 0.16666666666666666,
+      "recall_at_k": 0.16666666666666666,
+      "average_precision": 0.3537594629546356,
+      "missed_qualified_ids": [
+        "t06-biology",
+        "t04-self-taught",
+        "t09-intern",
+        "t11-consultant",
+        "t02-inventory",
+        "t05-physics",
+        "t03-career-change",
+        "t07-volunteer",
+        "t01-payments",
+        "t08-maintainer"
+      ]
+    },
+    "evidence_review": {
+      "review_budget": 12,
+      "qualified_found": 11,
+      "qualified_total": 12,
+      "precision_at_k": 0.9166666666666666,
+      "recall_at_k": 0.9166666666666666,
+      "average_precision": 0.9935897435897436,
+      "missed_qualified_ids": [
+        "t01-payments"
+      ]
+    },
+    "evidence_review_with_exploration": {
+      "review_budget": 12,
+      "qualified_found": 9,
+      "qualified_total": 12,
+      "precision_at_k": 0.75,
+      "recall_at_k": 0.75,
+      "average_precision": 0.9462454212454214,
+      "missed_qualified_ids": [
+        "t02-inventory",
+        "t08-maintainer",
+        "t01-payments"
+      ]
+    }
+  },
+  "false_supported_ids": [],
+  "qualified_needing_review_ids": [
+    "t02-inventory",
+    "t08-maintainer",
+    "t01-payments"
+  ],
+  "invariance": {
+    "identity_metadata": {
+      "pairs": 40,
+      "status_changes": [],
+      "max_similarity_change": 0.0
+    },
+    "evidence_order": {
+      "pairs": 40,
+      "status_changes": [],
+      "max_similarity_change": 0.0
+    },
+    "duplicate_evidence": {
+      "pairs": 40,
+      "status_changes": [],
+      "max_similarity_change": 0.0
+    }
+  },
+  "paraphrases": {
+    "pairs": 12,
+    "status_changes": [
+      {
+        "variant": "rewrite-t03-career-change",
+        "original": "t03-career-change",
+        "original_status": "evidence_supported",
+        "variant_status": "evidence_supported",
+        "changed_criteria": [
+          "users"
+        ]
+      },
+      {
+        "variant": "rewrite-t04-self-taught",
+        "original": "t04-self-taught",
+        "original_status": "evidence_supported",
+        "variant_status": "evidence_supported",
+        "changed_criteria": [
+          "research"
+        ]
+      },
+      {
+        "variant": "rewrite-t11-consultant",
+        "original": "t11-consultant",
+        "original_status": "evidence_supported",
+        "variant_status": "needs_review",
+        "changed_criteria": [
+          "users",
+          "research"
+        ]
+      },
+      {
+        "variant": "rewrite-t16-future",
+        "original": "t16-future",
+        "original_status": "needs_review",
+        "variant_status": "needs_review",
+        "changed_criteria": [
+          "api",
+          "tests"
+        ]
+      },
+      {
+        "variant": "rewrite-t13-recruitment",
+        "original": "t13-recruitment",
+        "original_status": "needs_review",
+        "variant_status": "needs_review",
+        "changed_criteria": [
+          "tests",
+          "users"
+        ]
+      },
+      {
+        "variant": "rewrite-t38-contractors",
+        "original": "t38-contractors",
+        "original_status": "needs_review",
+        "variant_status": "needs_review",
+        "changed_criteria": [
+          "api",
+          "production",
+          "users"
+        ]
+      },
+      {
+        "variant": "rewrite-t17-negation",
+        "original": "t17-negation",
+        "original_status": "needs_review",
+        "variant_status": "needs_review",
+        "changed_criteria": [
+          "users"
+        ]
+      }
+    ],
+    "false_supported_ids": [],
+    "qualified_needing_review_ids": [
+      "rewrite-t11-consultant",
+      "rewrite-t02-inventory",
+      "rewrite-t01-payments"
+    ]
+  },
+  "slices": {
+    "contradiction": {
+      "count": 1,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "early_career": {
+      "count": 1,
+      "qualified": 1,
+      "qualified_found": 1,
+      "false_supported": []
+    },
+    "empty": {
+      "count": 1,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "future": {
+      "count": 3,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "independent": {
+      "count": 4,
+      "qualified": 4,
+      "qualified_found": 4,
+      "false_supported": []
+    },
+    "instruction": {
+      "count": 1,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "keyword_stuffing": {
+      "count": 3,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "long_document": {
+      "count": 2,
+      "qualified": 1,
+      "qualified_found": 1,
+      "false_supported": []
+    },
+    "missing": {
+      "count": 8,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "near_miss": {
+      "count": 15,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "negation": {
+      "count": 2,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "nontraditional": {
+      "count": 5,
+      "qualified": 5,
+      "qualified_found": 5,
+      "false_supported": []
+    },
+    "ownership": {
+      "count": 7,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "production": {
+      "count": 5,
+      "qualified": 5,
+      "qualified_found": 4,
+      "false_supported": []
+    },
+    "research": {
+      "count": 4,
+      "qualified": 3,
+      "qualified_found": 3,
+      "false_supported": []
+    },
+    "unknown": {
+      "count": 2,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    },
+    "unrelated": {
+      "count": 3,
+      "qualified": 0,
+      "qualified_found": 0,
+      "false_supported": []
+    }
+  },
+  "test_summary": {
+    "applicant_tests_passed": 138,
+    "gmail_tests_passed": 101,
+    "statement_coverage_percent": 93.77777777777777,
+    "live_generation": {
+      "tested": true,
+      "model": "llama3.2:3b",
+      "job_descriptions_tested": [
+        "backend developer",
+        "frontend developer"
+      ],
+      "scope": "generation smoke tests, not ranking accuracy validation",
+      "requests_per_job": 2
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "backend-engineer",
+  "title": "Backend software developer",
+  "description": "Build and maintain web APIs backed by relational databases. Write SQL and automated software tests. Candidates may demonstrate readiness through operating production services, independently shipping useful products, or scientific computing research combined with backend development. Evaluate concrete work examples; no degree, employer prestige, or fixed career path is required.",
+  "criteria": [
+    {"id":"api","description":"Implemented an API","hypothesis":"This person has built an API.","required":true},
+    {"id":"sql","description":"Written SQL queries","hypothesis":"This person has written SQL queries.","required":true},
+    {"id":"tests","description":"Written automated software tests","hypothesis":"This person has written automated tests.","required":true},
+    {"id":"production","description":"Maintained a production service","hypothesis":"This person has maintained a software service in production.","required":false},
+    {"id":"users","description":"Shipped software used by other people","hypothesis":"This person has built software used by other people.","required":false},
+    {"id":"research","description":"Performed research using code","hypothesis":"This person has performed scientific research using code.","required":false}
+  ],
+  "profiles": [
+    {"id":"production","description":"Production service developer","criteria":["production"],"examples":[
+      "I implemented payment APIs, wrote PostgreSQL queries and automated integration tests, and maintained the deployed service through incidents.",
+      "I built a Go inventory API, optimized SQL queries, wrote automated regression tests, and operated the service in production.",
+      "I developed web service endpoints, implemented database queries and unit tests, and maintained production systems on call."
+    ],"near_misses":[
+      "I recruited engineers who built payment APIs, SQL queries and automated tests. I have never developed software myself.",
+      "I wrote a proposal to build an API with SQL and automated tests but have not implemented it."
+    ]},
+    {"id":"independent","description":"Independent builder with real users","criteria":["users"],"examples":[
+      "I built an appointment booking product used by local businesses, implemented its API and SQL queries, and wrote automated tests.",
+      "I independently shipped a community tool used by volunteers. I wrote its Python API, relational database queries and automated test suite.",
+      "I created a small paid web application with HTTP endpoints, PostgreSQL queries and automated tests, and supported its customers."
+    ],"near_misses":[
+      "I marketed a web app written by contractors. They wrote all APIs, SQL and automated tests.",
+      "I copied a product tutorial but never wrote database queries or automated tests. Nobody else has used it."
+    ]},
+    {"id":"research","description":"Researcher with demonstrated backend skills","criteria":["research"],"examples":[
+      "I performed computational biology research, implemented an API for experiment results, wrote SQL queries and automated software tests.",
+      "I wrote simulation code for scientific research and built a web API backed by SQL queries with an automated test suite.",
+      "I developed numerical experiments for a research project, created data access API endpoints, and wrote relational queries and automated regression tests."
+    ],"near_misses":[
+      "I studied scientific computing theory but have never built an API, written SQL or implemented tests.",
+      "I coordinated a research project while others wrote all code and database queries."
+    ]}
+  ],
+  "provenance":{"type":"human_authored_demo","note":"Illustrative job rubric; not validated against workplace outcomes."}
+}
