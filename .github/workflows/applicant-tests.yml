@@ -1,0 +1,43 @@
+name: Applicant evaluation tests
+
+on:
+  push:
+    branches: [main, 'feat/applicant-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-applicants.lock
+      - run: python -m pip install -r requirements-applicants.lock
+      - run: ruff check applicant_eval tests/applicants
+      - run: ruff format --check applicant_eval tests/applicants
+      - name: Download pinned local models
+        run: python -c 'from applicant_eval.models import LocalModels; LocalModels()'
+      - name: Applicant tests with actual models
+        run: pytest tests/applicants --run-model-tests -q --cov=applicant_eval --cov-report=term-missing
+      - name: Gmail regression tests
+        run: pytest test_classifier.py -q
+      - name: Reproduce synthetic benchmark
+        run: >-
+          python -m applicant_eval benchmark
+          --role examples/applicants/backend_role.json
+          --applicants benchmarks/applicants.jsonl
+          --paraphrases benchmarks/paraphrases.jsonl
+          --split test --budget 12 --offline
+          --output output/benchmark.json --html output/benchmark.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-applicant-benchmark
+          path: output/

@@ -1,5 +1,15 @@
 # gmail category builder
 
+## applicant evaluation prototype
+
+This repository also includes a local multi-profile applicant evaluator: separate
+profile centroids, source-linked capability checks, a human review queue, HTML/JSON
+reports, and a synthetic comparison benchmark. See [APPLICANTS.md](APPLICANTS.md)
+for setup, usage, test commands and limitations, and [benchmark results](benchmarks/RESULTS.md)
+for measured behavior. Run it with `python -m applicant_eval`.
+
+## gmail classifier
+
 classifies gmail messages into custom categories you describe in plain english. like "work travel receipts from airlines" or "family stuff" or "newsletters about AI".
 
 no paid APIs, everything runs locally — ollama for the LLM and sentence-transformers for embeddings.

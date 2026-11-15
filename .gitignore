@@ -12,3 +12,6 @@ build/
 /feedback_*.json
 /rules_*.json
 .pytest_cache/
+.coverage*
+.ruff_cache/
+htmlcov/

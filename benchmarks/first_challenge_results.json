@@ -1,0 +1,112 @@
+{
+  "dataset_sha256": "f714a81b1ac2b53eefde38c40c2a4e509ef980c46704433ac07ccb3b43241068",
+  "comparisons": {
+    "job_description": {
+      "review_budget": 12,
+      "qualified_found": 0,
+      "qualified_total": 12,
+      "precision_at_k": 0.0,
+      "recall_at_k": 0.0,
+      "average_precision": 0.2162559553236456,
+      "missed_qualified_ids": [
+        "t10-academic",
+        "t06-biology",
+        "t04-self-taught",
+        "t09-intern",
+        "t11-consultant",
+        "t05-physics",
+        "t07-volunteer",
+        "t08-maintainer",
+        "t03-career-change",
+        "t02-inventory",
+        "t01-payments",
+        "t12-long-tail"
+      ]
+    },
+    "single_centroid": {
+      "review_budget": 12,
+      "qualified_found": 4,
+      "qualified_total": 12,
+      "precision_at_k": 0.3333333333333333,
+      "recall_at_k": 0.3333333333333333,
+      "average_precision": 0.37317246734339654,
+      "missed_qualified_ids": [
+        "t11-consultant",
+        "t04-self-taught",
+        "t07-volunteer",
+        "t03-career-change",
+        "t08-maintainer",
+        "t02-inventory",
+        "t01-payments",
+        "t12-long-tail"
+      ]
+    },
+    "multiple_centroids": {
+      "review_budget": 12,
+      "qualified_found": 6,
+      "qualified_total": 12,
+      "precision_at_k": 0.5,
+      "recall_at_k": 0.5,
+      "average_precision": 0.5223053799140757,
+      "missed_qualified_ids": [
+        "t08-maintainer",
+        "t03-career-change",
+        "t09-intern",
+        "t07-volunteer",
+        "t01-payments",
+        "t12-long-tail"
+      ]
+    },
+    "chunk_matching": {
+      "review_budget": 12,
+      "qualified_found": 2,
+      "qualified_total": 12,
+      "precision_at_k": 0.16666666666666666,
+      "recall_at_k": 0.16666666666666666,
+      "average_precision": 0.29357384666457104,
+      "missed_qualified_ids": [
+        "t09-intern",
+        "t04-self-taught",
+        "t02-inventory",
+        "t05-physics",
+        "t11-consultant",
+        "t03-career-change",
+        "t12-long-tail",
+        "t01-payments",
+        "t07-volunteer",
+        "t08-maintainer"
+      ]
+    },
+    "evidence_review": {
+      "review_budget": 12,
+      "qualified_found": 11,
+      "qualified_total": 12,
+      "precision_at_k": 0.9166666666666666,
+      "recall_at_k": 0.9166666666666666,
+      "average_precision": 0.9526366607248958,
+      "missed_qualified_ids": [
+        "t12-long-tail"
+      ]
+    },
+    "evidence_review_with_exploration": {
+      "review_budget": 12,
+      "qualified_found": 9,
+      "qualified_total": 12,
+      "precision_at_k": 0.75,
+      "recall_at_k": 0.75,
+      "average_precision": 0.9113770001927898,
+      "missed_qualified_ids": [
+        "t02-inventory",
+        "t08-maintainer",
+        "t12-long-tail"
+      ]
+    }
+  },
+  "false_supported_ids": [],
+  "qualified_needing_review_ids": [
+    "t02-inventory",
+    "t08-maintainer",
+    "t01-payments",
+    "t12-long-tail"
+  ]
+}
